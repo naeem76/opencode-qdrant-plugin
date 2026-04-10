@@ -75,6 +75,13 @@ export class Indexer {
     this.currentRun = run()
     try {
       await this.currentRun
+    } catch (err) {
+      console.error("[opencode-qdrant] indexer error:", err)
+      this.state.status = "error"
+      this.state.errorCount += 1
+      this.state.errors.push({ file: "(indexer)", error: String(err) })
+      this.state.completedAt = Date.now()
+      await this.emitState().catch(() => {})
     } finally {
       this.currentRun = null
       this.currentAbort = null

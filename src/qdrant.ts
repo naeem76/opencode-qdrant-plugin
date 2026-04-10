@@ -17,7 +17,7 @@ export class QdrantWrapper {
     readonly collectionName: string,
     readonly vectorSize: number,
   ) {
-    this.client = new QdrantClient({ url: qdrantUrl })
+    this.client = new QdrantClient({ url: qdrantUrl, checkCompatibility: false })
   }
 
   isHealthy() {
