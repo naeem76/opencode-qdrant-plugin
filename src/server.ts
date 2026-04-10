@@ -6,7 +6,7 @@ import { QdrantWrapper } from "./qdrant.js"
 import { writeStatusFile } from "./status-file.js"
 import { createTools } from "./tools.js"
 import { collectionNameForProject } from "./utils.js"
-import type { PluginOptions } from "./types.js"
+import type { IndexingState, PluginOptions } from "./types.js"
 
 export const server: Plugin = async (input, rawOptions) => {
   const options = resolveConfig(rawOptions as PluginOptions | undefined)
@@ -14,9 +14,54 @@ export const server: Plugin = async (input, rawOptions) => {
     options.collectionName ?? collectionNameForProject(input.directory, options.embeddingDimensions)
   const qdrant = new QdrantWrapper(options.qdrantUrl, collectionName, options.embeddingDimensions)
   const embeddings = createEmbeddingProvider(options)
+
+  const toast = async (
+    message: string,
+    variant: "info" | "success" | "warning" | "error" = "info",
+    duration = 5000,
+  ) => {
+    try {
+      await input.client.tui.showToast({
+        body: { title: "Qdrant", message, variant, duration },
+      })
+    } catch {
+      // TUI may not be connected yet during startup — silently ignore
+    }
+  }
+
+  let lastToastStatus: IndexingState["status"] | null = null
+
   const indexer = new Indexer(input.directory, qdrant, embeddings, options, async (state) => {
     await writeStatusFile(input.directory, state)
+
+    // Toast on status transitions only (not every progress tick)
+    if (state.status !== lastToastStatus) {
+      lastToastStatus = state.status
+      switch (state.status) {
+        case "discovering":
+          await toast("Discovering files to index...", "info", 3000)
+          break
+        case "indexing":
+          await toast(`Indexing ${state.totalFiles} files...`, "info", 4000)
+          break
+        case "complete":
+          await toast(
+            `Indexed ${state.processedFiles} files (${state.totalChunks} chunks, ${state.skippedFiles} unchanged)`,
+            "success",
+            6000,
+          )
+          break
+        case "error":
+          await toast(
+            `Indexing finished with ${state.errorCount} error(s)`,
+            "warning",
+            8000,
+          )
+          break
+      }
+    }
   })
+
   const log = async (
     level: "debug" | "info" | "warn" | "error",
     message: string,
@@ -41,6 +86,7 @@ export const server: Plugin = async (input, rawOptions) => {
     await log("info", `Initialized Qdrant index ${collectionName}`)
   } else {
     await log("warn", `Qdrant unavailable at ${options.qdrantUrl}. Plugin loaded in degraded mode.`)
+    await toast(`Qdrant unavailable at ${options.qdrantUrl}`, "error", 8000)
   }
 
   await writeStatusFile(input.directory, indexer.getState())

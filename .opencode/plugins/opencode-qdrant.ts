@@ -1,5 +1,5 @@
-import type { Plugin } from "@opencode-ai/plugin"
 import { server as createServer } from "../../dist/server.js"
+import type { Plugin } from "@opencode-ai/plugin"
 
 const options = {
   qdrantUrl: "http://localhost:6333",
@@ -7,6 +7,11 @@ const options = {
   indexOnStart: true,
 }
 
-export const OpencodeQdrant: Plugin = async (input) => {
+const server: Plugin = async (input) => {
   return createServer(input, options)
+}
+
+export default {
+  id: "opencode-qdrant",
+  server,
 }
