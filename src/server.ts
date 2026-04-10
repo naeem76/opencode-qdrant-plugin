@@ -1,14 +1,14 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { resolveConfig } from "./config.js"
 import { createEmbeddingProvider } from "./embedding/index.js"
 import { Indexer } from "./indexer.js"
 import { QdrantWrapper } from "./qdrant.js"
-import { writeStatusFile } from "./status-file.js"
+import { consumeReindexTrigger, writeStatusFile } from "./status-file.js"
 import { createTools } from "./tools.js"
 import { collectionNameForProject } from "./utils.js"
 import type { IndexingState, PluginOptions } from "./types.js"
 
-export const server: Plugin = async (input, rawOptions) => {
+const server: Plugin = async (input, rawOptions) => {
   const options = resolveConfig(rawOptions as PluginOptions | undefined)
   const collectionName =
     options.collectionName ?? collectionNameForProject(input.directory, options.embeddingDimensions)
@@ -91,6 +91,27 @@ export const server: Plugin = async (input, rawOptions) => {
 
   await writeStatusFile(input.directory, indexer.getState())
 
+  // Poll for reindex trigger file written by TUI Ctrl+P command
+  const triggerPollInterval = setInterval(async () => {
+    try {
+      const trigger = await consumeReindexTrigger(input.directory)
+      if (trigger && !indexer.isRunning()) {
+        await log("info", `Reindex triggered from TUI (full=${trigger.full})`)
+        if (await qdrant.healthCheck()) {
+          if (trigger.full) {
+            indexer.startFull()
+          } else {
+            indexer.startIncremental()
+          }
+        } else {
+          await toast("Qdrant unavailable — cannot reindex", "error")
+        }
+      }
+    } catch {
+      // ignore polling errors
+    }
+  }, 2000)
+
   return {
     tool: createTools(qdrant, embeddings, indexer, options, log),
     event: async ({ event }) => {
@@ -102,3 +123,14 @@ export const server: Plugin = async (input, rawOptions) => {
     },
   }
 }
+
+// Named export for local dev wrappers
+export { server }
+
+// Default export — required by OpenCode v1 plugin format for npm/git distribution
+const plugin: PluginModule & { id: string } = {
+  id: "opencode-qdrant",
+  server,
+}
+
+export default plugin

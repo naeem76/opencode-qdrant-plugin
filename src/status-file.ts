@@ -35,3 +35,38 @@ export async function readStatusFile(rootDirectory: string): Promise<PersistedSt
     return null
   }
 }
+
+// ---------------------------------------------------------------------------
+// Reindex trigger file — TUI writes it, server polls & consumes it
+// ---------------------------------------------------------------------------
+
+export type ReindexTrigger = {
+  full: boolean
+  timestamp: number
+}
+
+export function getTriggerFilePath(rootDirectory: string) {
+  return path.join(rootDirectory, ".opencode", "qdrant-reindex-trigger.json")
+}
+
+export async function writeReindexTrigger(rootDirectory: string, full = false) {
+  const filePath = getTriggerFilePath(rootDirectory)
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.writeFile(
+    filePath,
+    JSON.stringify({ full, timestamp: Date.now() } satisfies ReindexTrigger),
+    "utf8",
+  )
+}
+
+export async function consumeReindexTrigger(rootDirectory: string): Promise<ReindexTrigger | null> {
+  const filePath = getTriggerFilePath(rootDirectory)
+  try {
+    const raw = await fs.readFile(filePath, "utf8")
+    const trigger = JSON.parse(raw) as ReindexTrigger
+    await fs.unlink(filePath)
+    return trigger
+  } catch {
+    return null
+  }
+}

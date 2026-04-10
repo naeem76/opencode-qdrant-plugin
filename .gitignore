@@ -4,8 +4,8 @@ node_modules/
 # Build output
 dist/
 
-# Runtime status files
-.opencode/qdrant-status.json
+# OpenCode local config / runtime files
+.opencode/
 
 # OS files
 Thumbs.db
