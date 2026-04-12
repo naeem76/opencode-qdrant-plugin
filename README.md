@@ -28,8 +28,6 @@ docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 
 ## Installation
 
-### From git
-
 Add to your project's `.opencode/opencode.json`:
 
 ```json
@@ -46,6 +44,28 @@ Add to your project's `.opencode/tui.json` for sidebar and Ctrl+P commands:
 {
   "plugin": [
     "github:naeem76/opencode-qdrant-plugin"
+  ]
+}
+```
+
+### Windows
+
+On Windows, the `github:` spec may fail because OpenCode's compiled binary cannot locate the git executable. Use the tarball URL instead:
+
+`.opencode/opencode.json`:
+```json
+{
+  "plugin": [
+    ["https://github.com/naeem76/opencode-qdrant-plugin/archive/refs/heads/main.tar.gz", { "qdrantUrl": "http://localhost:6333" }]
+  ]
+}
+```
+
+`.opencode/tui.json`:
+```json
+{
+  "plugin": [
+    "https://github.com/naeem76/opencode-qdrant-plugin/archive/refs/heads/main.tar.gz"
   ]
 }
 ```

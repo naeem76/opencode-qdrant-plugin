@@ -1,0 +1,109 @@
+import { resolveConfig } from "./config.js";
+import { createEmbeddingProvider } from "./embedding/index.js";
+import { Indexer } from "./indexer.js";
+import { QdrantWrapper } from "./qdrant.js";
+import { consumeReindexTrigger, writeStatusFile } from "./status-file.js";
+import { createTools } from "./tools.js";
+import { collectionNameForProject } from "./utils.js";
+const server = async (input, rawOptions) => {
+    const options = resolveConfig(rawOptions);
+    const collectionName = options.collectionName ?? collectionNameForProject(input.directory, options.embeddingDimensions);
+    const qdrant = new QdrantWrapper(options.qdrantUrl, collectionName, options.embeddingDimensions);
+    const embeddings = createEmbeddingProvider(options);
+    const toast = async (message, variant = "info", duration = 5000) => {
+        try {
+            await input.client.tui.showToast({
+                body: { title: "Qdrant", message, variant, duration },
+            });
+        }
+        catch {
+            // TUI may not be connected yet during startup — silently ignore
+        }
+    };
+    let lastToastStatus = null;
+    const indexer = new Indexer(input.directory, qdrant, embeddings, options, async (state) => {
+        await writeStatusFile(input.directory, state);
+        // Toast on status transitions only (not every progress tick)
+        if (state.status !== lastToastStatus) {
+            lastToastStatus = state.status;
+            switch (state.status) {
+                case "discovering":
+                    await toast("Discovering files to index...", "info", 3000);
+                    break;
+                case "indexing":
+                    await toast(`Indexing ${state.totalFiles} files...`, "info", 4000);
+                    break;
+                case "complete":
+                    await toast(`Indexed ${state.processedFiles} files (${state.totalChunks} chunks, ${state.skippedFiles} unchanged)`, "success", 6000);
+                    break;
+                case "error":
+                    await toast(`Indexing finished with ${state.errorCount} error(s)`, "warning", 8000);
+                    break;
+            }
+        }
+    });
+    const log = async (level, message, extra) => {
+        await input.client.app.log({
+            body: {
+                service: "opencode-qdrant",
+                level,
+                message,
+                extra,
+            },
+        });
+    };
+    const healthy = await qdrant.healthCheck();
+    if (healthy) {
+        await qdrant.ensureCollection();
+        if (options.indexOnStart) {
+            indexer.startIncremental();
+        }
+        await log("info", `Initialized Qdrant index ${collectionName}`);
+    }
+    else {
+        await log("warn", `Qdrant unavailable at ${options.qdrantUrl}. Plugin loaded in degraded mode.`);
+        await toast(`Qdrant unavailable at ${options.qdrantUrl}`, "error", 8000);
+    }
+    await writeStatusFile(input.directory, indexer.getState());
+    // Poll for reindex trigger file written by TUI Ctrl+P command
+    const triggerPollInterval = setInterval(async () => {
+        try {
+            const trigger = await consumeReindexTrigger(input.directory);
+            if (trigger && !indexer.isRunning()) {
+                await log("info", `Reindex triggered from TUI (full=${trigger.full})`);
+                if (await qdrant.healthCheck()) {
+                    if (trigger.full) {
+                        indexer.startFull();
+                    }
+                    else {
+                        indexer.startIncremental();
+                    }
+                }
+                else {
+                    await toast("Qdrant unavailable — cannot reindex", "error");
+                }
+            }
+        }
+        catch {
+            // ignore polling errors
+        }
+    }, 2000);
+    return {
+        tool: createTools(qdrant, embeddings, indexer, options, log),
+        event: async ({ event }) => {
+            if (event.type === "session.created" && options.indexOnStart && !indexer.isRunning()) {
+                if (await qdrant.healthCheck()) {
+                    indexer.startIncremental();
+                }
+            }
+        },
+    };
+};
+// Named export for local dev wrappers
+export { server };
+// Default export — required by OpenCode v1 plugin format for npm/git distribution
+const plugin = {
+    id: "opencode-qdrant",
+    server,
+};
+export default plugin;
