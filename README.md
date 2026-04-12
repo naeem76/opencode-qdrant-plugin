@@ -50,13 +50,27 @@ Add to your project's `.opencode/tui.json` for sidebar and Ctrl+P commands:
 
 ### Windows
 
-On Windows, the `github:` spec may fail because OpenCode's compiled binary cannot locate the git executable. Use the tarball URL instead:
+On Windows, remote plugin specs (`github:` and tarball URLs) do not work reliably due to two issues in OpenCode's compiled Bun binary:
+
+1. **`github:` spec fails** — `@npmcli/git` cannot find the git executable. The `which` package's binary lookup fails inside the compiled Bun runtime, even when git is in the system PATH.
+2. **Tarball installs break native modules** — OpenCode's arborist runs with `ignoreScripts: true`, which skips postinstall scripts. `sharp` (a transitive dependency of `@xenova/transformers`, used for local embeddings) requires a native binary built via postinstall, so it crashes at runtime with `Cannot find module '../build/Release/sharp-win32-x64.node'`.
+
+The recommended approach on Windows is to clone the repo locally and use a `file://` URL:
+
+```bash
+git clone https://github.com/naeem76/opencode-qdrant-plugin.git
+cd opencode-qdrant-plugin
+npm install
+npm run build
+```
+
+Then reference the local clone in your config. Use the absolute path to wherever you cloned it.
 
 `.opencode/opencode.json`:
 ```json
 {
   "plugin": [
-    ["https://github.com/naeem76/opencode-qdrant-plugin/archive/refs/heads/main.tar.gz", { "qdrantUrl": "http://localhost:6333" }]
+    ["file:///C:/path/to/opencode-qdrant-plugin", { "qdrantUrl": "http://localhost:6333" }]
   ]
 }
 ```
@@ -65,10 +79,12 @@ On Windows, the `github:` spec may fail because OpenCode's compiled binary canno
 ```json
 {
   "plugin": [
-    "https://github.com/naeem76/opencode-qdrant-plugin/archive/refs/heads/main.tar.gz"
+    "file:///C:/path/to/opencode-qdrant-plugin"
   ]
 }
 ```
+
+To enable globally for all projects, add the same entries to `~/.config/opencode/opencode.json` and `~/.config/opencode/tui.json` instead.
 
 ### Global install
 
