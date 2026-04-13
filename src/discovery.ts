@@ -3,6 +3,8 @@ import path from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { minimatch } from "minimatch"
+import ignore, { type Ignore } from "ignore"
+import { retryOpen } from "./fs-helpers.js"
 import type { FileEntry, ResolvedConfig } from "./types.js"
 import { isGeneratedLikePath, isSensitivePath, normalizeSlashes } from "./utils.js"
 
@@ -72,25 +74,52 @@ async function listPaths(directory: string) {
       .filter(Boolean)
   } catch {
     const results: string[] = []
-    await walk(directory, directory, results)
+    const ig = ignore()
+    await loadGitignore(ig, directory, "")
+    await walk(directory, directory, ig, results)
     return results
   }
 }
 
-async function walk(root: string, current: string, output: string[]) {
+/** Read a .gitignore file and add its rules scoped to the given prefix. */
+async function loadGitignore(ig: Ignore, dir: string, prefix: string) {
+  try {
+    const content = await fs.readFile(path.join(dir, ".gitignore"), "utf8")
+    const rules = content
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "" && !line.startsWith("#"))
+      .map((rule) => (prefix ? `${prefix}/${rule}` : rule))
+    ig.add(rules)
+  } catch {
+    // No .gitignore in this directory — nothing to add
+  }
+}
+
+async function walk(root: string, current: string, ig: Ignore, output: string[]) {
   const entries = await fs.readdir(current, { withFileTypes: true })
   for (const entry of entries) {
+    const fullPath = path.join(current, entry.name)
+    const relativePath = normalizeSlashes(path.relative(root, fullPath))
+
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) {
         continue
       }
-      await walk(root, path.join(current, entry.name), output)
+      // Test directory paths with trailing slash so patterns like "dist/" match
+      if (ig.ignores(relativePath + "/")) {
+        continue
+      }
+      await loadGitignore(ig, fullPath, relativePath)
+      await walk(root, fullPath, ig, output)
       continue
     }
     if (!entry.isFile()) {
       continue
     }
-    output.push(normalizeSlashes(path.relative(root, path.join(current, entry.name))))
+    if (ig.ignores(relativePath)) {
+      continue
+    }
+    output.push(relativePath)
   }
 }
 
@@ -108,7 +137,7 @@ function shouldIncludePath(relativePath: string, config: ResolvedConfig) {
 }
 
 async function looksBinary(filePath: string) {
-  const file = await fs.open(filePath, "r")
+  const file = await retryOpen(filePath, "r")
   try {
     const buffer = Buffer.alloc(512)
     const { bytesRead } = await file.read(buffer, 0, 512, 0)

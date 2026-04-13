@@ -1,5 +1,5 @@
-import fs from "node:fs/promises";
 import { v4 as uuidv4 } from "uuid";
+import { retryRead } from "./fs-helpers.js";
 import { chunkFile, extractFileSummary } from "./chunker.js";
 import { discoverFiles } from "./discovery.js";
 import { detectLanguage, sha256 } from "./utils.js";
@@ -37,7 +37,13 @@ export class Indexer {
         return structuredClone(this.state);
     }
     async emitState() {
-        await this.onStateChange?.(this.getState());
+        try {
+            await this.onStateChange?.(this.getState());
+        }
+        catch {
+            // Status file write failed (e.g. EBUSY) — non-fatal, indexing continues.
+            // The next emitState() call will overwrite with current progress anyway.
+        }
     }
     isRunning() {
         return this.currentRun !== null;
@@ -102,7 +108,12 @@ export class Indexer {
         await this.emitState();
         for (const file of files) {
             await this.ensureNotAborted();
-            const snapshot = await this.snapshot(file.absolutePath, file.relativePath);
+            const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
+            if (!snapshot) {
+                this.state.processedFiles += 1;
+                await this.emitState();
+                continue;
+            }
             await this.indexSnapshot(snapshot);
             this.state.processedFiles += 1;
             await this.emitState();
@@ -120,7 +131,12 @@ export class Indexer {
         const seen = new Set();
         for (const file of files) {
             await this.ensureNotAborted();
-            const snapshot = await this.snapshot(file.absolutePath, file.relativePath);
+            const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
+            if (!snapshot) {
+                this.state.processedFiles += 1;
+                await this.emitState();
+                continue;
+            }
             seen.add(snapshot.relativePath);
             if (existing.get(snapshot.relativePath) === snapshot.hash) {
                 this.state.skippedFiles += 1;
@@ -137,8 +153,28 @@ export class Indexer {
         await this.qdrant.deleteByFilePaths(removed);
         await this.finishState();
     }
+    /**
+     * Attempt to snapshot a file, returning `null` (and recording an error) if
+     * the file cannot be read after retries (e.g. EBUSY lock from antivirus).
+     */
+    async trySnapshot(absolutePath, relativePath) {
+        try {
+            return await this.snapshot(absolutePath, relativePath);
+        }
+        catch (err) {
+            this.state.errorCount += 1;
+            this.state.errors.push({
+                file: relativePath,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            await this.emitState();
+            return null;
+        }
+    }
     async snapshot(absolutePath, relativePath) {
-        const content = await fs.readFile(absolutePath, "utf8");
+        // Use more aggressive retries for indexer reads — antivirus / editor locks
+        // can persist longer than the default 200ms total window.
+        const content = await retryRead(absolutePath, { maxRetries: 5, baseDelayMs: 100 });
         return {
             absolutePath,
             relativePath,

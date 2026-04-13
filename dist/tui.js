@@ -2,6 +2,7 @@ import { createSignal, onCleanup, createComponent } from "solid-js";
 import { createElement, insert, setProp } from "@opentui/solid";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { retryReadSync, atomicWriteFileSync } from "./fs-helpers.js";
 function statusFilePath(rootDir) {
     return path.join(rootDir, ".opencode", "qdrant-status.json");
 }
@@ -10,7 +11,7 @@ function triggerFilePath(rootDir) {
 }
 function readStatus(rootDir) {
     try {
-        return JSON.parse(fs.readFileSync(statusFilePath(rootDir), "utf8"));
+        return JSON.parse(retryReadSync(statusFilePath(rootDir)));
     }
     catch {
         return null;
@@ -19,7 +20,7 @@ function readStatus(rootDir) {
 function writeTriggerFile(rootDir, full) {
     const fp = triggerFilePath(rootDir);
     fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }), "utf8");
+    atomicWriteFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }));
 }
 // ---------------------------------------------------------------------------
 // Sidebar component (no JSX — .ts files don't support it in Bun)

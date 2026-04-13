@@ -3,6 +3,7 @@ import { createSignal, onCleanup, createComponent } from "solid-js"
 import { createElement, insert, setProp } from "@opentui/solid"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { retryReadSync, atomicWriteFileSync } from "./fs-helpers.js"
 import type { IndexingState } from "./types.js"
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ function triggerFilePath(rootDir: string) {
 
 function readStatus(rootDir: string): QdrantStatus | null {
   try {
-    return JSON.parse(fs.readFileSync(statusFilePath(rootDir), "utf8")) as QdrantStatus
+    return JSON.parse(retryReadSync(statusFilePath(rootDir))) as QdrantStatus
   } catch {
     return null
   }
@@ -30,7 +31,7 @@ function readStatus(rootDir: string): QdrantStatus | null {
 function writeTriggerFile(rootDir: string, full: boolean) {
   const fp = triggerFilePath(rootDir)
   fs.mkdirSync(path.dirname(fp), { recursive: true })
-  fs.writeFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }), "utf8")
+  atomicWriteFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }))
 }
 
 // ---------------------------------------------------------------------------

@@ -34,7 +34,12 @@ const server = async (input, rawOptions) => {
                     await toast(`Indexing ${state.totalFiles} files...`, "info", 4000);
                     break;
                 case "complete":
-                    await toast(`Indexed ${state.processedFiles} files (${state.totalChunks} chunks, ${state.skippedFiles} unchanged)`, "success", 6000);
+                    if (state.totalChunks === 0 && state.skippedFiles === state.processedFiles) {
+                        await toast(`Index up to date (${state.collectionPointCount ?? 0} chunks)`, "success", 4000);
+                    }
+                    else {
+                        await toast(`Indexed ${state.processedFiles} files (${state.totalChunks} chunks, ${state.skippedFiles} unchanged)`, "success", 6000);
+                    }
                     break;
                 case "error":
                     await toast(`Indexing finished with ${state.errorCount} error(s)`, "warning", 8000);
@@ -64,7 +69,6 @@ const server = async (input, rawOptions) => {
         await log("warn", `Qdrant unavailable at ${options.qdrantUrl}. Plugin loaded in degraded mode.`);
         await toast(`Qdrant unavailable at ${options.qdrantUrl}`, "error", 8000);
     }
-    await writeStatusFile(input.directory, indexer.getState());
     // Poll for reindex trigger file written by TUI Ctrl+P command
     const triggerPollInterval = setInterval(async () => {
         try {

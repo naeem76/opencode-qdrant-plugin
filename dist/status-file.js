@@ -1,19 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { atomicWriteFile, retryRead, retryUnlink } from "./fs-helpers.js";
 export function getStatusFilePath(rootDirectory) {
     return path.join(rootDirectory, ".opencode", "qdrant-status.json");
 }
 export async function writeStatusFile(rootDirectory, state) {
     const filePath = getStatusFilePath(rootDirectory);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify({
+    await atomicWriteFile(filePath, JSON.stringify({
         ...state,
         updatedAt: Date.now(),
-    }, null, 2), "utf8");
+    }, null, 2));
 }
 export async function readStatusFile(rootDirectory) {
     try {
-        const raw = await fs.readFile(getStatusFilePath(rootDirectory), "utf8");
+        const raw = await retryRead(getStatusFilePath(rootDirectory));
         return JSON.parse(raw);
     }
     catch {
@@ -26,14 +27,14 @@ export function getTriggerFilePath(rootDirectory) {
 export async function writeReindexTrigger(rootDirectory, full = false) {
     const filePath = getTriggerFilePath(rootDirectory);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify({ full, timestamp: Date.now() }), "utf8");
+    await atomicWriteFile(filePath, JSON.stringify({ full, timestamp: Date.now() }));
 }
 export async function consumeReindexTrigger(rootDirectory) {
     const filePath = getTriggerFilePath(rootDirectory);
     try {
-        const raw = await fs.readFile(filePath, "utf8");
+        const raw = await retryRead(filePath);
         const trigger = JSON.parse(raw);
-        await fs.unlink(filePath);
+        await retryUnlink(filePath);
         return trigger;
     }
     catch {

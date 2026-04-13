@@ -1,5 +1,6 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { atomicWriteFile, retryRead, retryUnlink } from "./fs-helpers.js"
 import type { IndexingState } from "./types.js"
 
 export type PersistedStatus = IndexingState & {
@@ -13,7 +14,7 @@ export function getStatusFilePath(rootDirectory: string) {
 export async function writeStatusFile(rootDirectory: string, state: IndexingState) {
   const filePath = getStatusFilePath(rootDirectory)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(
+  await atomicWriteFile(
     filePath,
     JSON.stringify(
       {
@@ -23,13 +24,12 @@ export async function writeStatusFile(rootDirectory: string, state: IndexingStat
       null,
       2,
     ),
-    "utf8",
   )
 }
 
 export async function readStatusFile(rootDirectory: string): Promise<PersistedStatus | null> {
   try {
-    const raw = await fs.readFile(getStatusFilePath(rootDirectory), "utf8")
+    const raw = await retryRead(getStatusFilePath(rootDirectory))
     return JSON.parse(raw) as PersistedStatus
   } catch {
     return null
@@ -52,19 +52,18 @@ export function getTriggerFilePath(rootDirectory: string) {
 export async function writeReindexTrigger(rootDirectory: string, full = false) {
   const filePath = getTriggerFilePath(rootDirectory)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(
+  await atomicWriteFile(
     filePath,
     JSON.stringify({ full, timestamp: Date.now() } satisfies ReindexTrigger),
-    "utf8",
   )
 }
 
 export async function consumeReindexTrigger(rootDirectory: string): Promise<ReindexTrigger | null> {
   const filePath = getTriggerFilePath(rootDirectory)
   try {
-    const raw = await fs.readFile(filePath, "utf8")
+    const raw = await retryRead(filePath)
     const trigger = JSON.parse(raw) as ReindexTrigger
-    await fs.unlink(filePath)
+    await retryUnlink(filePath)
     return trigger
   } catch {
     return null
