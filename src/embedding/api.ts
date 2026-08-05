@@ -1,4 +1,10 @@
 import type { EmbeddingProvider } from "../types.js"
+import {
+  HttpRetryableError,
+  isRetryableHttpStatus,
+  isTransientNetworkError,
+  retryAsync,
+} from "../retry.js"
 
 type ApiEmbeddingOptions = {
   apiUrl: string
@@ -27,28 +33,37 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
     const vectors: number[][] = []
     for (let index = 0; index < texts.length; index += API_BATCH_SIZE) {
       const batch = texts.slice(index, index + API_BATCH_SIZE)
-      const response = await fetch(new URL("/embeddings", this.options.apiUrl), {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.options.apiKey}`,
-          "Content-Type": "application/json",
+      const batchVectors = await retryAsync(
+        async () => {
+          const response = await fetch(new URL("/embeddings", this.options.apiUrl), {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.options.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: this.options.model,
+              input: batch,
+              dimensions: this.options.dimensions,
+            }),
+          })
+
+          if (!response.ok) {
+            if (isRetryableHttpStatus(response.status)) {
+              throw new HttpRetryableError(response.status)
+            }
+            throw new Error(`Embedding API failed with ${response.status}`)
+          }
+
+          const json = (await response.json()) as { data?: Array<{ embedding: number[] }> }
+          const result = json.data?.map((item) => item.embedding) ?? []
+          if (result.length !== batch.length) {
+            throw new Error("Embedding API returned an unexpected number of vectors")
+          }
+          return result
         },
-        body: JSON.stringify({
-          model: this.options.model,
-          input: batch,
-          dimensions: this.options.dimensions,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`Embedding API failed with ${response.status}`)
-      }
-
-      const json = (await response.json()) as { data?: Array<{ embedding: number[] }> }
-      const batchVectors = json.data?.map((item) => item.embedding) ?? []
-      if (batchVectors.length !== batch.length) {
-        throw new Error("Embedding API returned an unexpected number of vectors")
-      }
+        (err) => err instanceof HttpRetryableError || isTransientNetworkError(err),
+      )
       vectors.push(...batchVectors)
     }
 

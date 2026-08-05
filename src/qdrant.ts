@@ -1,5 +1,6 @@
 import { QdrantClient } from "@qdrant/js-client-rest"
 import type { CollectionInfo, IndexedPoint, PointPayload, SearchHit } from "./types.js"
+import { isTransientNetworkError, retryAsync } from "./retry.js"
 
 type SearchOptions = {
   limit: number
@@ -77,42 +78,49 @@ export class QdrantWrapper {
     }
   }
 
-  async upsertPoints(points: IndexedPoint[]) {
-    if (points.length === 0) {
-      return
-    }
-
-    await this.ensureCollection()
-    for (let index = 0; index < points.length; index += 100) {
-      const chunk = points.slice(index, index + 100)
-      await this.client.upsert(this.collectionName, { wait: true, points: chunk })
-    }
-    this.healthy = true
+async upsertPoints(points: IndexedPoint[]) {
+  if (points.length === 0) {
+    return
   }
 
-  async search(vector: number[], options: SearchOptions): Promise<SearchHit[]> {
-    await this.ensureCollection()
-    const result = await this.client.search(this.collectionName, {
-      vector,
-      limit: Math.max(options.limit, 1),
-      score_threshold: options.scoreThreshold,
-      with_payload: true,
-      filter: options.chunkType
-        ? {
-            must: [{ key: "chunk_type", match: { value: options.chunkType } }],
-          }
-        : undefined,
-    })
-
-    this.healthy = true
-    return result.flatMap((item) => {
-      const payload = item.payload as PointPayload | null
-      if (!payload) {
-        return []
-      }
-      return [{ id: item.id, score: item.score, payload }]
-    })
+  await this.ensureCollection()
+  for (let index = 0; index < points.length; index += 100) {
+    const chunk = points.slice(index, index + 100)
+    await retryAsync(
+      () => this.client.upsert(this.collectionName, { wait: true, points: chunk }),
+      (err) => isTransientNetworkError(err),
+    )
   }
+  this.healthy = true
+}
+
+async search(vector: number[], options: SearchOptions): Promise<SearchHit[]> {
+  await this.ensureCollection()
+  const result = await retryAsync(
+    () =>
+      this.client.search(this.collectionName, {
+        vector,
+        limit: Math.max(options.limit, 1),
+        score_threshold: options.scoreThreshold,
+        with_payload: true,
+        filter: options.chunkType
+          ? {
+              must: [{ key: "chunk_type", match: { value: options.chunkType } }],
+            }
+          : undefined,
+      }),
+    (err) => isTransientNetworkError(err),
+  )
+
+  this.healthy = true
+  return result.flatMap((item) => {
+    const payload = item.payload as PointPayload | null
+    if (!payload) {
+      return []
+    }
+    return [{ id: item.id, score: item.score, payload }]
+  })
+}
 
 /**
  * Build a `file_path → content_hash` map of currently indexed files.
