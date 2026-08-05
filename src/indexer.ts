@@ -46,6 +46,11 @@ export class Indexer {
   private state: IndexingState
   private timings: RunTimings = emptyTimings()
 
+  /** Throttle: don't write status more often than this (ms). */
+  private static readonly EMIT_INTERVAL_MS = 500
+  private lastEmitAt = 0
+  private emitPending = false
+
   /** Snapshots waiting for the next batch embed+upsert flush. */
   private batchQueue: QueuedSnapshot[] = []
   /** In-flight flush promise, prevents overlapping flushes. */
@@ -89,12 +94,37 @@ export class Indexer {
     }
   }
 
+  /**
+   * Throttled state emit. Writes the status file at most once per
+   * EMIT_INTERVAL_MS to avoid EBUSY storms when many concurrent files
+   * finish at once. A final flush is guaranteed by emitStateNow().
+   */
   private async emitState() {
+    const now = Date.now()
+    if (now - this.lastEmitAt < Indexer.EMIT_INTERVAL_MS) {
+      this.emitPending = true
+      return
+    }
+    this.lastEmitAt = now
+    this.emitPending = false
     try {
       await this.onStateChange?.(this.getState())
     } catch {
       // Status file write failed (e.g. EBUSY) — non-fatal, indexing continues.
-      // The next emitState() call will overwrite with current progress anyway.
+    }
+  }
+
+  /**
+   * Force an immediate state emit, bypassing the throttle. Used at the
+   * end of a run (finishState) and on status transitions.
+   */
+  private async emitStateNow() {
+    this.lastEmitAt = Date.now()
+    this.emitPending = false
+    try {
+      await this.onStateChange?.(this.getState())
+    } catch {
+      // Status file write failed — non-fatal.
     }
   }
 
@@ -157,7 +187,7 @@ export class Indexer {
   private async indexFull() {
     this.timings = emptyTimings()
     this.resetState("discovering")
-    await this.emitState()
+    await this.emitStateNow()
     await this.qdrant.deleteCollection()
     await this.qdrant.ensureCollection()
     const t0 = Date.now()
@@ -165,7 +195,7 @@ export class Indexer {
     this.timings.discovery = Date.now() - t0
     this.state.totalFiles = files.length
     this.state.status = "indexing"
-    await this.emitState()
+    await this.emitStateNow()
     await mapWithConcurrency(files, this.config.concurrency, async (file) => {
       await this.ensureNotAborted()
       const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath)
@@ -186,14 +216,14 @@ export class Indexer {
   private async indexIncremental() {
     this.timings = emptyTimings()
     this.resetState("discovering")
-    await this.emitState()
+    await this.emitStateNow()
     const t0 = Date.now()
     const files = await discoverFiles(this.rootDirectory, this.config)
     const existing = await this.qdrant.getFileHashes()
     this.timings.discovery = Date.now() - t0
     this.state.totalFiles = files.length
     this.state.status = "indexing"
-    await this.emitState()
+    await this.emitStateNow()
 
     const seen = new Set<string>()
     await mapWithConcurrency(files, this.config.concurrency, async (file) => {
@@ -348,7 +378,7 @@ export class Indexer {
     this.state.timings = { ...this.timings }
     this.state.status = this.state.errorCount > 0 ? "error" : "complete"
     this.state.completedAt = Date.now()
-    await this.emitState()
+    await this.emitStateNow()
   }
 
   private async ensureNotAborted() {
