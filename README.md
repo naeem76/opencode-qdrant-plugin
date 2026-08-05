@@ -5,6 +5,7 @@ Semantic codebase indexing plugin for [OpenCode](https://github.com/nichochar/op
 ## Features
 
 - Indexes git-tracked files on project open (incremental by default)
+- Watches the project tree and triggers a debounced incremental reindex on save
 - Heuristic chunking at function/class boundaries with file summaries
 - Local embeddings (Xenova/all-MiniLM-L6-v2, 384d) or API embeddings (OpenAI-compatible, 1536d)
 - Per-project Qdrant collections (derived from project path + embedding dimensions)
@@ -130,6 +131,8 @@ Options are passed as the second element of the plugin tuple:
 | `scoreThreshold` | `number` | `0.3` | Minimum similarity score |
 | `collectionName` | `string` | auto-generated | Override Qdrant collection name |
 | `concurrency` | `number` | `8` | Max files indexed in parallel |
+| `watchFiles` | `boolean` | `true` | Watch the project tree and trigger a debounced incremental reindex on changes |
+| `watchDebounceMs` | `number` | `2000` | Debounce window for file-watch-triggered reindex |
 | `localWorkerCommand` | `string` | `"node"` | Command to run the embedding worker |
 
 ## Agent tools

@@ -33,6 +33,8 @@ export function resolveConfig(options?: PluginOptions): ResolvedConfig {
     collectionName: options.collectionName,
     concurrency: options.concurrency ?? 8,
     indexOnStart: options.indexOnStart ?? true,
+    watchFiles: options.watchFiles ?? true,
+    watchDebounceMs: options.watchDebounceMs ?? 2000,
     localWorkerCommand: options.localWorkerCommand ?? "node",
   }
 }

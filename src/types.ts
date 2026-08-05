@@ -17,6 +17,8 @@ export type PluginOptions = {
   collectionName?: string
   concurrency?: number
   indexOnStart?: boolean
+  watchFiles?: boolean
+  watchDebounceMs?: number
   localWorkerCommand?: string
 }
 
@@ -30,6 +32,8 @@ export type ResolvedConfig = Required<
   embeddingDimensions: number
   collectionName?: string
   concurrency: number
+  watchFiles: boolean
+  watchDebounceMs: number
   includePatterns?: string[]
 }
 

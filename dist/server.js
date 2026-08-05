@@ -4,6 +4,7 @@ import { Indexer } from "./indexer.js";
 import { QdrantWrapper } from "./qdrant.js";
 import { consumeReindexTrigger, writeStatusFile } from "./status-file.js";
 import { createTools } from "./tools.js";
+import { startFileWatcher } from "./watcher.js";
 import { collectionNameForProject } from "./utils.js";
 const server = async (input, rawOptions) => {
     const options = resolveConfig(rawOptions);
@@ -95,6 +96,25 @@ const server = async (input, rawOptions) => {
             // ignore polling errors
         }
     }, 2000);
+    // Watch the project tree and trigger a debounced incremental reindex
+    // when files change. Skips binary / sensitive / generated paths and
+    // SKIP_DIRS (.git, node_modules, dist, ...) so editor noise doesn't
+    // fire constant reindexes.
+    let fileWatcher = null;
+    if (options.watchFiles && healthy) {
+        fileWatcher = startFileWatcher({
+            rootDirectory: input.directory,
+            debounceMs: options.watchDebounceMs,
+            onChange: async (paths) => {
+                if (indexer.isRunning())
+                    return;
+                if (!(await qdrant.healthCheck()))
+                    return;
+                await log("info", `Reindex triggered by file watcher (${paths.length} changed)`);
+                indexer.startIncremental();
+            },
+        });
+    }
     return {
         tool: createTools(qdrant, embeddings, indexer, options, log),
         event: async ({ event }) => {
@@ -105,6 +125,7 @@ const server = async (input, rawOptions) => {
             }
             if (event.type === "server.instance.disposed") {
                 clearInterval(triggerPollInterval);
+                fileWatcher?.close();
             }
         },
     };
