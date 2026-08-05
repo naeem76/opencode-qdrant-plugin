@@ -1,4 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { isTransientNetworkError, retryAsync } from "./retry.js";
 export class QdrantWrapper {
     qdrantUrl;
     collectionName;
@@ -6,6 +7,7 @@ export class QdrantWrapper {
     client;
     healthy = false;
     ensured = false;
+    ensurePromise = null;
     constructor(qdrantUrl, collectionName, vectorSize) {
         this.qdrantUrl = qdrantUrl;
         this.collectionName = collectionName;
@@ -30,6 +32,18 @@ export class QdrantWrapper {
         if (this.ensured) {
             return;
         }
+        if (this.ensurePromise) {
+            return this.ensurePromise;
+        }
+        this.ensurePromise = this.doEnsureCollection();
+        try {
+            await this.ensurePromise;
+        }
+        finally {
+            this.ensurePromise = null;
+        }
+    }
+    async doEnsureCollection() {
         try {
             await this.client.getCollection(this.collectionName);
         }
@@ -73,13 +87,13 @@ export class QdrantWrapper {
         await this.ensureCollection();
         for (let index = 0; index < points.length; index += 100) {
             const chunk = points.slice(index, index + 100);
-            await this.client.upsert(this.collectionName, { wait: true, points: chunk });
+            await retryAsync(() => this.client.upsert(this.collectionName, { wait: true, points: chunk }), (err) => isTransientNetworkError(err));
         }
         this.healthy = true;
     }
     async search(vector, options) {
         await this.ensureCollection();
-        const result = await this.client.search(this.collectionName, {
+        const result = await retryAsync(() => this.client.search(this.collectionName, {
             vector,
             limit: Math.max(options.limit, 1),
             score_threshold: options.scoreThreshold,
@@ -89,7 +103,7 @@ export class QdrantWrapper {
                     must: [{ key: "chunk_type", match: { value: options.chunkType } }],
                 }
                 : undefined,
-        });
+        }), (err) => isTransientNetworkError(err));
         this.healthy = true;
         return result.flatMap((item) => {
             const payload = item.payload;
@@ -99,6 +113,16 @@ export class QdrantWrapper {
             return [{ id: item.id, score: item.score, payload }];
         });
     }
+    /**
+     * Build a `file_path → content_hash` map of currently indexed files.
+     *
+     * Scrolls the whole collection (no chunk_type filter) so the result is
+     * robust to files that lack a `summary` chunk — every file with at
+     * least one chunk is included. When a file has multiple chunks, all
+     * chunks of a given file share the same `content_hash` (it's the hash
+     * of the whole file, set in indexSnapshot), so any chunk's hash is
+     * authoritative.
+     */
     async getFileHashes() {
         await this.ensureCollection();
         const hashes = new Map();
@@ -109,13 +133,10 @@ export class QdrantWrapper {
                 offset,
                 with_payload: true,
                 with_vector: false,
-                filter: {
-                    must: [{ key: "chunk_type", match: { value: "summary" } }],
-                },
             });
             for (const point of page.points) {
                 const payload = point.payload;
-                if (payload) {
+                if (payload?.file_path && !hashes.has(payload.file_path)) {
                     hashes.set(payload.file_path, payload.content_hash);
                 }
             }
@@ -125,18 +146,16 @@ export class QdrantWrapper {
         this.healthy = true;
         return hashes;
     }
-    async deleteByFilePath(filePath) {
+    async deleteByFilePaths(filePaths) {
+        if (filePaths.length === 0) {
+            return;
+        }
         await this.ensureCollection();
         await this.client.delete(this.collectionName, {
             wait: true,
-            filter: { must: [{ key: "file_path", match: { value: filePath } }] },
+            filter: { should: filePaths.map((filePath) => ({ key: "file_path", match: { value: filePath } })) },
         });
         this.healthy = true;
-    }
-    async deleteByFilePaths(filePaths) {
-        for (const filePath of filePaths) {
-            await this.deleteByFilePath(filePath);
-        }
     }
     async deleteStaleFileVersion(filePath, currentHash) {
         await this.ensureCollection();
@@ -156,5 +175,6 @@ export class QdrantWrapper {
         catch {
         }
         this.ensured = false;
+        this.ensurePromise = null;
     }
 }

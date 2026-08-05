@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid"
 import { retryRead } from "./fs-helpers.js"
 import { chunkFile, extractFileSummary } from "./chunker.js"
 import { discoverFiles } from "./discovery.js"
+import { mapWithConcurrency } from "./concurrency.js"
 import type {
   EmbeddingProvider,
   FileSnapshot,
@@ -130,18 +131,18 @@ export class Indexer {
     this.state.totalFiles = files.length
     this.state.status = "indexing"
     await this.emitState()
-    for (const file of files) {
+    await mapWithConcurrency(files, this.config.concurrency, async (file) => {
       await this.ensureNotAborted()
       const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath)
       if (!snapshot) {
         this.state.processedFiles += 1
         await this.emitState()
-        continue
+        return
       }
       await this.indexSnapshot(snapshot)
       this.state.processedFiles += 1
       await this.emitState()
-    }
+    })
     await this.finishState()
   }
 
@@ -155,27 +156,27 @@ export class Indexer {
     await this.emitState()
 
     const seen = new Set<string>()
-    for (const file of files) {
+    await mapWithConcurrency(files, this.config.concurrency, async (file) => {
       await this.ensureNotAborted()
       const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath)
       if (!snapshot) {
         this.state.processedFiles += 1
         await this.emitState()
-        continue
+        return
       }
       seen.add(snapshot.relativePath)
       if (existing.get(snapshot.relativePath) === snapshot.hash) {
         this.state.skippedFiles += 1
         this.state.processedFiles += 1
         await this.emitState()
-        continue
+        return
       }
 
       await this.indexSnapshot(snapshot)
       await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash)
       this.state.processedFiles += 1
       await this.emitState()
-    }
+    })
 
     const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath))
     await this.qdrant.deleteByFilePaths(removed)

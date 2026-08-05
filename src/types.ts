@@ -15,6 +15,7 @@ export type PluginOptions = {
   searchLimit?: number
   scoreThreshold?: number
   collectionName?: string
+  concurrency?: number
   indexOnStart?: boolean
   localWorkerCommand?: string
 }
@@ -28,6 +29,7 @@ export type ResolvedConfig = Required<
   embeddingApiKey?: string
   embeddingDimensions: number
   collectionName?: string
+  concurrency: number
   includePatterns?: string[]
 }
 

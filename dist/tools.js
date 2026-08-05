@@ -1,6 +1,24 @@
 import { tool } from "@opencode-ai/plugin";
 import { minimatch } from "minimatch";
 import { truncate } from "./utils.js";
+/**
+ * Format an indexing run's duration from its state. Returns null if the run
+ * hasn't started or is still running and has no elapsed time yet.
+ */
+function formatDuration(state) {
+    if (state.startedAt === null)
+        return null;
+    const end = state.completedAt ?? Date.now();
+    const ms = end - state.startedAt;
+    if (ms < 1000)
+        return `${ms}ms`;
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60)
+        return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+}
 export function createTools(qdrant, embeddings, indexer, config, log) {
     return {
         qdrant_ping: tool({
@@ -12,11 +30,12 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                     messageID: context.messageID,
                 });
                 context.metadata({ title: "Qdrant plugin ping" });
+                const healthy = await qdrant.healthCheck();
                 const output = [
                     "opencode-qdrant plugin is loaded.",
                     `Collection: ${qdrant.collectionName}`,
                     `Provider: ${embeddings.name}`,
-                    `Qdrant healthy: ${qdrant.isHealthy() ? "yes" : "no"}`,
+                    `Qdrant healthy: ${healthy ? "yes" : "no"}`,
                 ].join("\n");
                 await log("info", "qdrant_ping completed", {
                     sessionID: context.sessionID,
@@ -43,8 +62,13 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                 context.metadata({ title: `Searching codebase: ${args.query}` });
                 await qdrant.ensureCollection();
                 const [vector] = await embeddings.embed([args.query]);
+                // When a file_pattern filter is applied client-side, over-fetch to
+                // compensate for matches that the glob will discard. Qdrant keyword
+                // filters can't express glob patterns, so we pull a larger pool and
+                // trim. Cap the pool at 20x the requested limit to bound cost.
+                const searchLimit = args.file_pattern ? Math.min(args.limit * 20, 200) : args.limit;
                 const results = await qdrant.search(vector, {
-                    limit: args.limit * (args.file_pattern ? 3 : 1),
+                    limit: searchLimit,
                     scoreThreshold: config.scoreThreshold,
                     chunkType: args.chunk_type,
                 });
@@ -86,7 +110,7 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                 context.metadata({ title: "Qdrant index status" });
                 const state = indexer.getState();
                 const info = await qdrant.getCollectionInfo();
-                const output = [
+                const lines = [
                     `Status: ${state.status}`,
                     `Collection: ${state.collectionName}`,
                     `Provider: ${state.provider}`,
@@ -95,7 +119,12 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                     `Collection points: ${info.pointsCount ?? "unknown"}`,
                     `Healthy: ${info.healthy ? "yes" : "no"}`,
                     `Errors: ${state.errorCount}`,
-                ].join("\n");
+                ];
+                const durationMs = formatDuration(state);
+                if (durationMs !== null) {
+                    lines.push(`Duration: ${durationMs}`);
+                }
+                const output = lines.join("\n");
                 await log("info", "index_status completed", {
                     sessionID: context.sessionID,
                     status: state.status,

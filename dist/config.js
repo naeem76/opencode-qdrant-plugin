@@ -24,7 +24,7 @@ export function resolveConfig(options) {
         searchLimit: options.searchLimit ?? 10,
         scoreThreshold: options.scoreThreshold ?? 0.3,
         collectionName: options.collectionName,
-        batchSize: options.batchSize ?? 50,
+        concurrency: options.concurrency ?? 8,
         indexOnStart: options.indexOnStart ?? true,
         localWorkerCommand: options.localWorkerCommand ?? "node",
     };

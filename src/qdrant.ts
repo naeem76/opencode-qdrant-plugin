@@ -12,6 +12,7 @@ export class QdrantWrapper {
   private readonly client: QdrantClient
   private healthy = false
   private ensured = false
+  private ensurePromise: Promise<void> | null = null
 
   constructor(
     readonly qdrantUrl: string,
@@ -40,7 +41,18 @@ export class QdrantWrapper {
     if (this.ensured) {
       return
     }
+    if (this.ensurePromise) {
+      return this.ensurePromise
+    }
+    this.ensurePromise = this.doEnsureCollection()
+    try {
+      await this.ensurePromise
+    } finally {
+      this.ensurePromise = null
+    }
+  }
 
+  private async doEnsureCollection() {
     try {
       await this.client.getCollection(this.collectionName)
     } catch {
@@ -189,5 +201,6 @@ async getFileHashes() {
     } catch {
     }
     this.ensured = false
+    this.ensurePromise = null
   }
 }

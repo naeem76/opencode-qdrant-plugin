@@ -50,6 +50,9 @@ export function truncate(text, maxLength = 800) {
 }
 export function isSensitivePath(filePath) {
     const normalized = normalizeSlashes(filePath).toLowerCase();
+    if (normalized === ".env") {
+        return true;
+    }
     return [
         "/.env",
         ".env.",

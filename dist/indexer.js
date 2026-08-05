@@ -2,7 +2,10 @@ import { v4 as uuidv4 } from "uuid";
 import { retryRead } from "./fs-helpers.js";
 import { chunkFile, extractFileSummary } from "./chunker.js";
 import { discoverFiles } from "./discovery.js";
+import { mapWithConcurrency } from "./concurrency.js";
 import { detectLanguage, sha256 } from "./utils.js";
+/** Maximum number of per-file errors retained in state. Older errors are dropped. */
+const MAX_RETAINED_ERRORS = 50;
 export class Indexer {
     rootDirectory;
     qdrant;
@@ -35,6 +38,16 @@ export class Indexer {
     }
     getState() {
         return structuredClone(this.state);
+    }
+    recordError(file, error) {
+        this.state.errorCount += 1;
+        this.state.errors.push({
+            file,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        if (this.state.errors.length > MAX_RETAINED_ERRORS) {
+            this.state.errors.splice(0, this.state.errors.length - MAX_RETAINED_ERRORS);
+        }
     }
     async emitState() {
         try {
@@ -73,8 +86,7 @@ export class Indexer {
         catch (err) {
             console.error("[opencode-qdrant] indexer error:", err);
             this.state.status = "error";
-            this.state.errorCount += 1;
-            this.state.errors.push({ file: "(indexer)", error: String(err) });
+            this.recordError("(indexer)", err);
             this.state.completedAt = Date.now();
             await this.emitState().catch(() => { });
         }
@@ -106,18 +118,18 @@ export class Indexer {
         this.state.totalFiles = files.length;
         this.state.status = "indexing";
         await this.emitState();
-        for (const file of files) {
+        await mapWithConcurrency(files, this.config.concurrency, async (file) => {
             await this.ensureNotAborted();
             const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
             if (!snapshot) {
                 this.state.processedFiles += 1;
                 await this.emitState();
-                continue;
+                return;
             }
             await this.indexSnapshot(snapshot);
             this.state.processedFiles += 1;
             await this.emitState();
-        }
+        });
         await this.finishState();
     }
     async indexIncremental() {
@@ -129,26 +141,26 @@ export class Indexer {
         this.state.status = "indexing";
         await this.emitState();
         const seen = new Set();
-        for (const file of files) {
+        await mapWithConcurrency(files, this.config.concurrency, async (file) => {
             await this.ensureNotAborted();
             const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
             if (!snapshot) {
                 this.state.processedFiles += 1;
                 await this.emitState();
-                continue;
+                return;
             }
             seen.add(snapshot.relativePath);
             if (existing.get(snapshot.relativePath) === snapshot.hash) {
                 this.state.skippedFiles += 1;
                 this.state.processedFiles += 1;
                 await this.emitState();
-                continue;
+                return;
             }
             await this.indexSnapshot(snapshot);
             await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash);
             this.state.processedFiles += 1;
             await this.emitState();
-        }
+        });
         const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath));
         await this.qdrant.deleteByFilePaths(removed);
         await this.finishState();
@@ -162,11 +174,7 @@ export class Indexer {
             return await this.snapshot(absolutePath, relativePath);
         }
         catch (err) {
-            this.state.errorCount += 1;
-            this.state.errors.push({
-                file: relativePath,
-                error: err instanceof Error ? err.message : String(err),
-            });
+            this.recordError(relativePath, err);
             await this.emitState();
             return null;
         }
@@ -209,11 +217,7 @@ export class Indexer {
             this.state.totalChunks += points.length;
         }
         catch (error) {
-            this.state.errorCount += 1;
-            this.state.errors.push({
-                file: snapshot.relativePath,
-                error: error instanceof Error ? error.message : String(error),
-            });
+            this.recordError(snapshot.relativePath, error);
             await this.emitState();
         }
     }

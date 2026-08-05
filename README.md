@@ -129,6 +129,7 @@ Options are passed as the second element of the plugin tuple:
 | `searchLimit` | `number` | `10` | Default results per search |
 | `scoreThreshold` | `number` | `0.3` | Minimum similarity score |
 | `collectionName` | `string` | auto-generated | Override Qdrant collection name |
+| `concurrency` | `number` | `8` | Max files indexed in parallel |
 | `localWorkerCommand` | `string` | `"node"` | Command to run the embedding worker |
 
 ## Agent tools
