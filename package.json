@@ -24,6 +24,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome lint",
+    "format": "biome format --write",
     "test": "bun test"
   },
   "dependencies": {
@@ -38,6 +40,7 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.7",
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3"
   }
