@@ -73,8 +73,13 @@ export function createTools(
         context.metadata({ title: `Searching codebase: ${args.query}` })
         await qdrant.ensureCollection()
         const [vector] = await embeddings.embed([args.query])
+        // When a file_pattern filter is applied client-side, over-fetch to
+        // compensate for matches that the glob will discard. Qdrant keyword
+        // filters can't express glob patterns, so we pull a larger pool and
+        // trim. Cap the pool at 20x the requested limit to bound cost.
+        const searchLimit = args.file_pattern ? Math.min(args.limit * 20, 200) : args.limit
         const results = await qdrant.search(vector, {
-          limit: args.limit * (args.file_pattern ? 3 : 1),
+          limit: searchLimit,
           scoreThreshold: config.scoreThreshold,
           chunkType: args.chunk_type,
         })
