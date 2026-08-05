@@ -129,6 +129,9 @@ const server: Plugin = async (input, rawOptions) => {
           indexer.startIncremental()
         }
       }
+      if (event.type === "server.instance.disposed") {
+        clearInterval(triggerPollInterval)
+      }
     },
   }
 }

@@ -2,10 +2,26 @@ import { tool } from "@opencode-ai/plugin"
 import { minimatch } from "minimatch"
 import { Indexer } from "./indexer.js"
 import { QdrantWrapper } from "./qdrant.js"
-import type { EmbeddingProvider, ResolvedConfig } from "./types.js"
+import type { EmbeddingProvider, IndexingState, ResolvedConfig } from "./types.js"
 import { truncate } from "./utils.js"
 
 type ToolLogger = (level: "debug" | "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => Promise<void>
+
+/**
+ * Format an indexing run's duration from its state. Returns null if the run
+ * hasn't started or is still running and has no elapsed time yet.
+ */
+function formatDuration(state: IndexingState): string | null {
+  if (state.startedAt === null) return null
+  const end = state.completedAt ?? Date.now()
+  const ms = end - state.startedAt
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}m ${remainingSeconds}s`
+}
 
 export function createTools(
   qdrant: QdrantWrapper,
@@ -103,7 +119,7 @@ export function createTools(
         context.metadata({ title: "Qdrant index status" })
         const state = indexer.getState()
         const info = await qdrant.getCollectionInfo()
-        const output = [
+        const lines = [
           `Status: ${state.status}`,
           `Collection: ${state.collectionName}`,
           `Provider: ${state.provider}`,
@@ -112,7 +128,12 @@ export function createTools(
           `Collection points: ${info.pointsCount ?? "unknown"}`,
           `Healthy: ${info.healthy ? "yes" : "no"}`,
           `Errors: ${state.errorCount}`,
-        ].join("\n")
+        ]
+        const durationMs = formatDuration(state)
+        if (durationMs !== null) {
+          lines.push(`Duration: ${durationMs}`)
+        }
+        const output = lines.join("\n")
         await log("info", "index_status completed", {
           sessionID: context.sessionID,
           status: state.status,
