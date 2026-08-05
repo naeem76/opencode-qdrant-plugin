@@ -44,7 +44,7 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
             },
         }),
         codebase_search: tool({
-            description: "Search the project codebase semantically. Use this to find relevant files, functions, classes, and code snippets from natural-language descriptions.",
+            description: "Search the project codebase semantically. Use this to find relevant files, functions, classes, and code snippets from natural-language descriptions. Returns a human-readable result list followed by a ```json block containing machine-readable results with {file, startLine, endLine, language, chunkType, score, content} per match — prefer parsing the JSON block when post-processing results.",
             args: {
                 query: tool.schema.string().min(1),
                 limit: tool.schema.number().int().min(1).max(20).default(config.searchLimit),
@@ -83,6 +83,15 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                     });
                     return `No semantic matches found for \"${args.query}\".`;
                 }
+                const structured = output.map((result) => ({
+                    file: result.payload.file_path,
+                    startLine: result.payload.start_line,
+                    endLine: result.payload.end_line,
+                    language: result.payload.language,
+                    chunkType: result.payload.chunk_type,
+                    score: Number(result.score.toFixed(4)),
+                    content: truncate(result.payload.content, 1200),
+                }));
                 const response = [
                     `Found ${output.length} result(s) for \"${args.query}\":`,
                     ...output.map((result, index) => {
@@ -90,6 +99,10 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                         const header = `${index + 1}. [${result.score.toFixed(2)}] ${payload.file_path}:${payload.start_line}-${payload.end_line} (${payload.language})${payload.chunk_type === "summary" ? " [summary]" : ""}`;
                         return `${header}\n${truncate(payload.content, 1200)}`;
                     }),
+                    "",
+                    "```json",
+                    JSON.stringify(structured),
+                    "```",
                 ].join("\n\n");
                 await log("info", "codebase_search completed", {
                     sessionID: context.sessionID,
