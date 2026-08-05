@@ -12,6 +12,9 @@ import type {
 import { detectLanguage, sha256 } from "./utils.js"
 import { QdrantWrapper } from "./qdrant.js"
 
+/** Maximum number of per-file errors retained in state. Older errors are dropped. */
+const MAX_RETAINED_ERRORS = 50
+
 export class Indexer {
   private currentAbort: AbortController | null = null
   private currentRun: Promise<void> | null = null
@@ -42,6 +45,17 @@ export class Indexer {
 
   getState() {
     return structuredClone(this.state)
+  }
+
+  private recordError(file: string, error: unknown) {
+    this.state.errorCount += 1
+    this.state.errors.push({
+      file,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    if (this.state.errors.length > MAX_RETAINED_ERRORS) {
+      this.state.errors.splice(0, this.state.errors.length - MAX_RETAINED_ERRORS)
+    }
   }
 
   private async emitState() {
@@ -83,8 +97,7 @@ export class Indexer {
     } catch (err) {
       console.error("[opencode-qdrant] indexer error:", err)
       this.state.status = "error"
-      this.state.errorCount += 1
-      this.state.errors.push({ file: "(indexer)", error: String(err) })
+      this.recordError("(indexer)", err)
       this.state.completedAt = Date.now()
       await this.emitState().catch(() => {})
     } finally {
@@ -180,11 +193,7 @@ export class Indexer {
     try {
       return await this.snapshot(absolutePath, relativePath)
     } catch (err) {
-      this.state.errorCount += 1
-      this.state.errors.push({
-        file: relativePath,
-        error: err instanceof Error ? err.message : String(err),
-      })
+      this.recordError(relativePath, err)
       await this.emitState()
       return null
     }
@@ -228,11 +237,7 @@ export class Indexer {
       await this.qdrant.upsertPoints(points)
       this.state.totalChunks += points.length
     } catch (error) {
-      this.state.errorCount += 1
-      this.state.errors.push({
-        file: snapshot.relativePath,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      this.recordError(snapshot.relativePath, error)
       await this.emitState()
     }
   }
