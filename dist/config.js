@@ -28,6 +28,8 @@ export function resolveConfig(options) {
         indexOnStart: options.indexOnStart ?? true,
         watchFiles: options.watchFiles ?? true,
         watchDebounceMs: options.watchDebounceMs ?? 2000,
+        localEmbeddingBatchSize: options.localEmbeddingBatchSize ?? 16,
+        localEmbeddingDtype: options.localEmbeddingDtype ?? "q8",
         localWorkerCommand: options.localWorkerCommand ?? "node",
     };
 }

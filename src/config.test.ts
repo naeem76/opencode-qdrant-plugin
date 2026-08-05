@@ -40,6 +40,12 @@ describe("resolveConfig — local provider defaults", () => {
     const cfg = resolveConfig(VALID)
     expect(cfg.localWorkerCommand).toBe("node")
   })
+
+  test("defaults local embedding micro-batches to 16 q8 texts", () => {
+    const cfg = resolveConfig(VALID)
+    expect(cfg.localEmbeddingBatchSize).toBe(16)
+    expect(cfg.localEmbeddingDtype).toBe("q8")
+  })
 })
 
 describe("resolveConfig — api provider", () => {
@@ -134,6 +140,8 @@ describe("resolveConfig — overrides", () => {
       scoreThreshold: 0.5,
       collectionName: "my_collection",
       indexOnStart: false,
+      localEmbeddingBatchSize: 8,
+      localEmbeddingDtype: "fp32",
       localWorkerCommand: "bun",
     }
     const cfg = resolveConfig(opts)
@@ -151,6 +159,8 @@ describe("resolveConfig — overrides", () => {
     expect(cfg.scoreThreshold).toBe(0.5)
     expect(cfg.collectionName).toBe("my_collection")
     expect(cfg.indexOnStart).toBe(false)
+    expect(cfg.localEmbeddingBatchSize).toBe(8)
+    expect(cfg.localEmbeddingDtype).toBe("fp32")
     expect(cfg.localWorkerCommand).toBe("bun")
   })
 })

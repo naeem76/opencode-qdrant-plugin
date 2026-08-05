@@ -28,10 +28,6 @@ export class Indexer {
     static EMIT_INTERVAL_MS = 500;
     lastEmitAt = 0;
     emitPending = false;
-    /** Snapshots waiting for the next batch embed+upsert flush. */
-    batchQueue = [];
-    /** In-flight flush promise, prevents overlapping flushes. */
-    batchFlush = null;
     constructor(rootDirectory, qdrant, embeddings, config, onStateChange) {
         this.rootDirectory = rootDirectory;
         this.qdrant = qdrant;
@@ -145,7 +141,6 @@ export class Indexer {
             await this.currentRun;
         }
         catch (err) {
-            console.error("[opencode-qdrant] indexer error:", err);
             this.state.status = "error";
             this.recordError("(indexer)", err);
             this.state.completedAt = Date.now();
@@ -184,6 +179,7 @@ export class Indexer {
         this.state.totalFiles = files.length;
         this.state.status = "indexing";
         await this.emitStateNow();
+        const snapshots = [];
         await mapWithConcurrency(files, this.config.concurrency, async (file) => {
             await this.ensureNotAborted();
             const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
@@ -192,12 +188,9 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            this.queueForBatch(snapshot);
-            this.state.processedFiles += 1;
-            await this.emitState();
+            snapshots.push(snapshot);
         });
-        await this.flushBatch();
-        this.logTimings("full");
+        await this.processSnapshotBatches(snapshots, false);
         await this.finishState();
     }
     async indexIncremental() {
@@ -212,6 +205,7 @@ export class Indexer {
         this.state.status = "indexing";
         await this.emitStateNow();
         const seen = new Set();
+        const changed = [];
         await mapWithConcurrency(files, this.config.concurrency, async (file) => {
             await this.ensureNotAborted();
             const snapshot = await this.trySnapshot(file.absolutePath, file.relativePath);
@@ -227,15 +221,11 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            this.queueForBatch(snapshot);
-            await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash);
-            this.state.processedFiles += 1;
-            await this.emitState();
+            changed.push(snapshot);
         });
-        await this.flushBatch();
+        await this.processSnapshotBatches(changed, true);
         const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath));
         await this.qdrant.deleteByFilePaths(removed);
-        this.logTimings("incremental");
         await this.finishState();
     }
     /**
@@ -266,39 +256,30 @@ export class Indexer {
         };
     }
     /**
-       * Queue a snapshot for batched embedding + upsert. Does NOT block —
-       * the caller continues and the batch is flushed later either when
-       * the queue fills (concurrency items) or by the final flushBatch()
-       * after the file loop. Blocking here would deadlock when fewer than
-       * `concurrency` files need embedding (they'd wait for a flush that
-       * can't trigger because the queue never fills and the loop can't
-       * reach the final flush).
-       */
-    queueForBatch(snapshot) {
-        this.batchQueue.push({ snapshot });
-        if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
-            this.batchFlush = this.flushBatch().finally(() => {
-                this.batchFlush = null;
-            });
+     * Process changed snapshots in deterministic file groups. Progress only
+     * advances after each group's vectors have been embedded and upserted.
+     * For incremental runs, stale points are deleted after the replacement
+     * points exist so a failed embed never removes the last good version.
+     */
+    async processSnapshotBatches(snapshots, deleteStaleVersions) {
+        for (let start = 0; start < snapshots.length; start += this.config.concurrency) {
+            await this.ensureNotAborted();
+            const batch = snapshots.slice(start, start + this.config.concurrency);
+            const indexed = await this.indexSnapshotBatch(batch);
+            if (indexed && deleteStaleVersions) {
+                await mapWithConcurrency(batch, this.config.concurrency, (snapshot) => this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash));
+            }
+            this.state.processedFiles += batch.length;
+            await this.emitState();
         }
     }
-    /**
-     * Flush all queued snapshots: chunk every file, embed all chunks in a
-     * single call, upsert all points in one request. This is the key
-     * performance optimization — transformers.js processes batches far
-     * more efficiently than per-file requests.
-     */
-    async flushBatch() {
-        // Wait for any in-flight flush to complete before draining the queue.
-        if (this.batchFlush) {
-            await this.batchFlush;
-        }
-        const batch = this.batchQueue.splice(0);
+    /** Chunk, embed, and upsert one group of files. */
+    async indexSnapshotBatch(batch) {
         if (batch.length === 0)
-            return;
+            return true;
         const tChunk = Date.now();
         const allChunks = [];
-        for (const { snapshot } of batch) {
+        for (const snapshot of batch) {
             const chunks = [
                 extractFileSummary(snapshot.content),
                 ...chunkFile(snapshot.content, this.config.chunkMaxLines, this.config.chunkOverlapLines, snapshot.language),
@@ -309,7 +290,7 @@ export class Indexer {
         }
         this.timings.chunking += Date.now() - tChunk;
         if (allChunks.length === 0) {
-            return;
+            return true;
         }
         try {
             const tEmbed = Date.now();
@@ -335,11 +316,13 @@ export class Indexer {
             this.timings.totalChunks += allChunks.length;
             this.timings.batches += 1;
             this.state.totalChunks += points.length;
+            return true;
         }
         catch (error) {
-            for (const { snapshot } of batch) {
+            for (const snapshot of batch) {
                 this.recordError(snapshot.relativePath, error);
             }
+            return false;
         }
     }
     async finishState() {
@@ -354,9 +337,5 @@ export class Indexer {
         if (this.currentAbort?.signal.aborted) {
             throw new Error("Indexing aborted");
         }
-    }
-    logTimings(mode) {
-        const t = this.timings;
-        console.error(`[opencode-qdrant] ${mode} reindex timings:`, `discovery=${t.discovery}ms`, `chunking=${t.chunking}ms`, `embedding=${t.embedding}ms (${t.totalChunks} chunks in ${t.batches} batches, avg=${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`, `upsert=${t.upsert}ms`, `total=${t.discovery + t.chunking + t.embedding + t.upsert}ms`);
     }
 }

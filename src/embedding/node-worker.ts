@@ -2,12 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import readline from "node:readline"
 import path from "node:path"
-import type { EmbeddingProvider } from "../types.js"
+import type { EmbeddingProvider, LocalEmbeddingDtype } from "../types.js"
 
 type NodeWorkerEmbeddingOptions = {
   command: string
   model: string
   dimensions: number
+  batchSize: number
+  dtype: LocalEmbeddingDtype
 }
 
 type Pending = {
@@ -37,7 +39,7 @@ export class NodeWorkerEmbeddingProvider implements EmbeddingProvider {
   private nextId = 1
 
   constructor(private readonly options: NodeWorkerEmbeddingOptions) {
-    this.name = `local-worker:${options.model}`
+    this.name = `local-worker:${options.model}:${options.dtype}`
     this.dimensions = options.dimensions
     this.workerPath = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -109,7 +111,15 @@ export class NodeWorkerEmbeddingProvider implements EmbeddingProvider {
       this.pending.set(id, { resolve, reject })
     })
 
-    this.child.stdin.write(`${JSON.stringify({ id, model: this.options.model, texts })}\n`)
+    this.child.stdin.write(
+      `${JSON.stringify({
+        id,
+        model: this.options.model,
+        texts,
+        batchSize: this.options.batchSize,
+        dtype: this.options.dtype,
+      })}\n`,
+    )
 
     const vectors = await promise
     if (vectors.length !== texts.length) {

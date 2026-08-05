@@ -24,7 +24,7 @@ export class NodeWorkerEmbeddingProvider {
     nextId = 1;
     constructor(options) {
         this.options = options;
-        this.name = `local-worker:${options.model}`;
+        this.name = `local-worker:${options.model}:${options.dtype}`;
         this.dimensions = options.dimensions;
         this.workerPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../worker/embed-worker.mjs");
     }
@@ -88,7 +88,13 @@ export class NodeWorkerEmbeddingProvider {
         const promise = new Promise((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
         });
-        this.child.stdin.write(`${JSON.stringify({ id, model: this.options.model, texts })}\n`);
+        this.child.stdin.write(`${JSON.stringify({
+            id,
+            model: this.options.model,
+            texts,
+            batchSize: this.options.batchSize,
+            dtype: this.options.dtype,
+        })}\n`);
         const vectors = await promise;
         if (vectors.length !== texts.length) {
             throw new Error("Local embedding worker returned an unexpected number of vectors");

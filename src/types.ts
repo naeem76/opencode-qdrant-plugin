@@ -1,4 +1,5 @@
 export type EmbeddingProviderKind = "local" | "api"
+export type LocalEmbeddingDtype = "auto" | "q4" | "q8" | "fp32"
 
 export type PluginOptions = {
   qdrantUrl: string
@@ -19,6 +20,8 @@ export type PluginOptions = {
   indexOnStart?: boolean
   watchFiles?: boolean
   watchDebounceMs?: number
+  localEmbeddingBatchSize?: number
+  localEmbeddingDtype?: LocalEmbeddingDtype
   localWorkerCommand?: string
 }
 

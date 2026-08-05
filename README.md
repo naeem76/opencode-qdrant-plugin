@@ -134,6 +134,8 @@ Options are passed as the second element of the plugin tuple:
 | `concurrency` | `number` | `8` | Max files indexed in parallel |
 | `watchFiles` | `boolean` | `true` | Watch the project tree and trigger a debounced incremental reindex on changes |
 | `watchDebounceMs` | `number` | `2000` | Debounce window for file-watch-triggered reindex |
+| `localEmbeddingBatchSize` | `number` | `16` | Local embedding micro-batch size (texts are length-sorted to reduce padding) |
+| `localEmbeddingDtype` | `"auto" \| "q4" \| "q8" \| "fp32"` | `"q8"` | Local model dtype; `q8` was fastest in CPU benchmarks |
 | `localWorkerCommand` | `string` | `"node"` | Command to run the embedding worker |
 
 ## Agent tools

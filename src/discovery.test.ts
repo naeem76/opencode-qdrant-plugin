@@ -28,7 +28,12 @@ const baseConfig = (overrides: Partial<ResolvedConfig> = {}): ResolvedConfig => 
   searchLimit: 10,
   scoreThreshold: 0.3,
   collectionName: undefined,
+  concurrency: 8,
   indexOnStart: true,
+  watchFiles: true,
+  watchDebounceMs: 2000,
+  localEmbeddingBatchSize: 16,
+  localEmbeddingDtype: "q8",
   localWorkerCommand: "node",
   ...overrides,
 })

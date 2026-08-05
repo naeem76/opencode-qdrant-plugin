@@ -16,5 +16,7 @@ export function createEmbeddingProvider(config: ResolvedConfig): EmbeddingProvid
     command: config.localWorkerCommand,
     model: config.embeddingModel,
     dimensions: config.embeddingDimensions,
+    batchSize: config.localEmbeddingBatchSize,
+    dtype: config.localEmbeddingDtype,
   })
 }

@@ -13,5 +13,7 @@ export function createEmbeddingProvider(config) {
         command: config.localWorkerCommand,
         model: config.embeddingModel,
         dimensions: config.embeddingDimensions,
+        batchSize: config.localEmbeddingBatchSize,
+        dtype: config.localEmbeddingDtype,
     });
 }
