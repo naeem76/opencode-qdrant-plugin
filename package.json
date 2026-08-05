@@ -1,6 +1,6 @@
 {
   "name": "opencode-qdrant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Qdrant-based semantic codebase indexing plugin for OpenCode",
   "license": "MIT",
   "type": "module",
