@@ -7,7 +7,7 @@ Semantic codebase indexing plugin for [OpenCode](https://github.com/nichochar/op
 - Indexes git-tracked files on project open (incremental by default)
 - Watches the project tree and triggers a debounced incremental reindex on save
 - Heuristic chunking at function/class boundaries with file summaries
-- Local embeddings (Xenova/all-MiniLM-L6-v2, 384d) or API embeddings (OpenAI-compatible, 1536d)
+- Local embeddings (HuggingFace transformers.js, all-MiniLM-L6-v2, 384d) or API embeddings (OpenAI-compatible, 1536d)
 - Per-project Qdrant collections (derived from project path + embedding dimensions)
 - Agent tools: `codebase_search`, `index_status`, `reindex`, `qdrant_ping`
 - TUI sidebar showing live indexing status
@@ -51,10 +51,11 @@ Add to your project's `.opencode/tui.json` for sidebar and Ctrl+P commands:
 
 ### Windows
 
-On Windows, remote plugin specs (`github:` and tarball URLs) do not work reliably due to two issues in OpenCode's compiled Bun binary:
+On Windows, remote plugin specs (`github:` and tarball URLs) do not work reliably due to an issue in OpenCode's compiled Bun binary:
 
 1. **`github:` spec fails** — `@npmcli/git` cannot find the git executable. The `which` package's binary lookup fails inside the compiled Bun runtime, even when git is in the system PATH.
-2. **Tarball installs break native modules** — OpenCode's arborist runs with `ignoreScripts: true`, which skips postinstall scripts. `sharp` (a transitive dependency of `@xenova/transformers`, used for local embeddings) requires a native binary built via postinstall, so it crashes at runtime with `Cannot find module '../build/Release/sharp-win32-x64.node'`.
+
+> **Note on native modules:** Earlier versions of this plugin depended on `@xenova/transformers`, which pulled in `sharp@0.32` — a native module that required a postinstall script to build. OpenCode's arborist runs with `ignoreScripts: true`, which skipped that script, so `sharp` crashed at runtime on Windows. The plugin now uses `@huggingface/transformers@^4`, which depends on `sharp@^0.34` — prebuilt `@img/sharp-*` binaries ship as plain packages with no postinstall, so installs work under `ignoreScripts: true`.
 
 The recommended approach on Windows is to clone the repo locally and use a `file://` URL:
 

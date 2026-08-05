@@ -13,7 +13,7 @@
 
 import process from "node:process"
 import readline from "node:readline"
-import { pipeline } from "@xenova/transformers"
+import { pipeline } from "@huggingface/transformers"
 
 /** Cache of model name -> pipeline promise (loaded once, reused). */
 const extractors = new Map()
