@@ -138,6 +138,7 @@ export class Indexer {
   }
 
   private resetState(status: IndexingState["status"]) {
+    this.timings = emptyTimings()
     this.state = {
       ...this.state,
       status,
@@ -149,6 +150,7 @@ export class Indexer {
       errors: [],
       startedAt: Date.now(),
       completedAt: null,
+      timings: undefined,
     }
   }
 
@@ -343,6 +345,7 @@ export class Indexer {
   private async finishState() {
     const info = await this.qdrant.getCollectionInfo()
     this.state.collectionPointCount = info.pointsCount
+    this.state.timings = { ...this.timings }
     this.state.status = this.state.errorCount > 0 ? "error" : "complete"
     this.state.completedAt = Date.now()
     await this.emitState()

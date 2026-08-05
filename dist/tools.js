@@ -137,6 +137,15 @@ export function createTools(qdrant, embeddings, indexer, config, log) {
                 if (durationMs !== null) {
                     lines.push(`Duration: ${durationMs}`);
                 }
+                if (state.timings) {
+                    const t = state.timings;
+                    lines.push(`Timings:`);
+                    lines.push(`  Discovery: ${t.discovery}ms`);
+                    lines.push(`  Chunking: ${t.chunking}ms`);
+                    lines.push(`  Embedding: ${t.embedding}ms (${t.totalChunks} chunks, ${t.batches} batches, ${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`);
+                    lines.push(`  Upsert: ${t.upsert}ms`);
+                    lines.push(`  Total measured: ${t.discovery + t.chunking + t.embedding + t.upsert}ms`);
+                }
                 const output = lines.join("\n");
                 await log("info", "index_status completed", {
                     sessionID: context.sessionID,

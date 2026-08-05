@@ -148,10 +148,19 @@ export function createTools(
           `Healthy: ${info.healthy ? "yes" : "no"}`,
           `Errors: ${state.errorCount}`,
         ]
-        const durationMs = formatDuration(state)
-        if (durationMs !== null) {
-          lines.push(`Duration: ${durationMs}`)
-        }
+const durationMs = formatDuration(state)
+    if (durationMs !== null) {
+      lines.push(`Duration: ${durationMs}`)
+    }
+    if (state.timings) {
+      const t = state.timings
+      lines.push(`Timings:`)
+      lines.push(`  Discovery: ${t.discovery}ms`)
+      lines.push(`  Chunking: ${t.chunking}ms`)
+      lines.push(`  Embedding: ${t.embedding}ms (${t.totalChunks} chunks, ${t.batches} batches, ${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`)
+      lines.push(`  Upsert: ${t.upsert}ms`)
+      lines.push(`  Total measured: ${t.discovery + t.chunking + t.embedding + t.upsert}ms`)
+    }
         const output = lines.join("\n")
         await log("info", "index_status completed", {
           sessionID: context.sessionID,

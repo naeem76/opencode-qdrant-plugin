@@ -107,6 +107,14 @@ export type IndexingState = {
   collectionName: string
   collectionPointCount: number | null
   provider: string
+  timings?: {
+    discovery: number
+    chunking: number
+    embedding: number
+    upsert: number
+    batches: number
+    totalChunks: number
+  }
 }
 
 export interface EmbeddingProvider {
