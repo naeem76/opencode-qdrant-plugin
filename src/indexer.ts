@@ -98,19 +98,35 @@ export class Indexer {
    * Throttled state emit. Writes the status file at most once per
    * EMIT_INTERVAL_MS to avoid EBUSY storms when many concurrent files
    * finish at once. A final flush is guaranteed by emitStateNow().
+   * Trailing-edge throttle: the last call within a window always fires.
    */
   private async emitState() {
     const now = Date.now()
-    if (now - this.lastEmitAt < Indexer.EMIT_INTERVAL_MS) {
-      this.emitPending = true
+    if (now - this.lastEmitAt >= Indexer.EMIT_INTERVAL_MS) {
+      this.lastEmitAt = now
+      this.emitPending = false
+      try {
+        await this.onStateChange?.(this.getState())
+      } catch {
+        // Status file write failed — non-fatal.
+      }
       return
     }
-    this.lastEmitAt = now
-    this.emitPending = false
-    try {
-      await this.onStateChange?.(this.getState())
-    } catch {
-      // Status file write failed (e.g. EBUSY) — non-fatal, indexing continues.
+    // Within throttle window — schedule a trailing flush if one isn't already.
+    if (!this.emitPending) {
+      this.emitPending = true
+      const delay = Indexer.EMIT_INTERVAL_MS - (now - this.lastEmitAt)
+      setTimeout(() => {
+        if (!this.emitPending) return
+        this.emitPending = false
+        this.lastEmitAt = Date.now()
+        try {
+          const result = this.onStateChange?.(this.getState())
+          if (result) result.catch(() => {})
+        } catch {
+          // non-fatal
+        }
+      }, delay)
     }
   }
 
