@@ -4,6 +4,7 @@ import { chunkFile, extractFileSummary } from "./chunker.js"
 import { discoverFiles } from "./discovery.js"
 import { mapWithConcurrency } from "./concurrency.js"
 import type {
+  Chunk,
   EmbeddingProvider,
   FileSnapshot,
   IndexedPoint,
@@ -16,10 +17,20 @@ import { QdrantWrapper } from "./qdrant.js"
 /** Maximum number of per-file errors retained in state. Older errors are dropped. */
 const MAX_RETAINED_ERRORS = 50
 
+interface QueuedSnapshot {
+  snapshot: FileSnapshot
+  resolve: () => void
+}
+
 export class Indexer {
   private currentAbort: AbortController | null = null
   private currentRun: Promise<void> | null = null
   private state: IndexingState
+
+  /** Snapshots waiting for the next batch embed+upsert flush. */
+  private batchQueue: QueuedSnapshot[] = []
+  /** In-flight flush promise, prevents overlapping flushes. */
+  private batchFlush: Promise<void> | null = null
 
   constructor(
     private readonly rootDirectory: string,
@@ -139,10 +150,11 @@ export class Indexer {
         await this.emitState()
         return
       }
-      await this.indexSnapshot(snapshot)
+      await this.queueForBatch(snapshot)
       this.state.processedFiles += 1
       await this.emitState()
     })
+    await this.flushBatch()
     await this.finishState()
   }
 
@@ -172,11 +184,12 @@ export class Indexer {
         return
       }
 
-      await this.indexSnapshot(snapshot)
+      await this.queueForBatch(snapshot)
       await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash)
       this.state.processedFiles += 1
       await this.emitState()
     })
+    await this.flushBatch()
 
     const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath))
     await this.qdrant.deleteByFilePaths(removed)
@@ -214,19 +227,57 @@ export class Indexer {
     }
   }
 
-  private async indexSnapshot(snapshot: FileSnapshot) {
+/**
+   * Queue a snapshot for batched embedding + upsert. Returns a promise that
+   * resolves once the batch containing this snapshot has been flushed. When
+   * the queue reaches `concurrency` items, a flush is triggered immediately
+   * so embeddings run while other files are still being read.
+   */
+  private async queueForBatch(snapshot: FileSnapshot): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.batchQueue.push({ snapshot, resolve })
+      if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
+        this.batchFlush = this.flushBatch().finally(() => {
+          this.batchFlush = null
+        })
+      }
+    })
+  }
+
+  /**
+   * Flush all queued snapshots: chunk every file, embed all chunks in a
+   * single call, upsert all points in one request. This is the key
+   * performance optimization — transformers.js processes batches far
+   * more efficiently than per-file requests.
+   */
+  private async flushBatch(): Promise<void> {
+    const batch = this.batchQueue.splice(0)
+    if (batch.length === 0) return
+
+    const allChunks: Array<{ chunk: Chunk; snapshot: FileSnapshot }> = []
+    for (const { snapshot } of batch) {
+      const chunks = [
+        extractFileSummary(snapshot.content),
+        ...chunkFile(
+          snapshot.content,
+          this.config.chunkMaxLines,
+          this.config.chunkOverlapLines,
+          snapshot.language,
+        ),
+      ]
+      for (const chunk of chunks) {
+        allChunks.push({ chunk, snapshot })
+      }
+    }
+
+    if (allChunks.length === 0) {
+      for (const item of batch) item.resolve()
+      return
+    }
+
     try {
-const chunks = [
-      extractFileSummary(snapshot.content),
-      ...chunkFile(
-        snapshot.content,
-        this.config.chunkMaxLines,
-        this.config.chunkOverlapLines,
-        snapshot.language,
-      ),
-    ]
-      const vectors = await this.embeddings.embed(chunks.map((chunk) => chunk.content))
-      const points: IndexedPoint[] = chunks.map((chunk, index) => ({
+      const vectors = await this.embeddings.embed(allChunks.map(({ chunk }) => chunk.content))
+      const points: IndexedPoint[] = allChunks.map(({ chunk, snapshot }, index) => ({
         id: uuidv4(),
         vector: vectors[index],
         payload: {
@@ -243,9 +294,12 @@ const chunks = [
       await this.qdrant.upsertPoints(points)
       this.state.totalChunks += points.length
     } catch (error) {
-      this.recordError(snapshot.relativePath, error)
-      await this.emitState()
+      for (const { snapshot } of batch) {
+        this.recordError(snapshot.relativePath, error)
+      }
     }
+
+    for (const item of batch) item.resolve()
   }
 
   private async finishState() {

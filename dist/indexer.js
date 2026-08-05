@@ -15,6 +15,10 @@ export class Indexer {
     currentAbort = null;
     currentRun = null;
     state;
+    /** Snapshots waiting for the next batch embed+upsert flush. */
+    batchQueue = [];
+    /** In-flight flush promise, prevents overlapping flushes. */
+    batchFlush = null;
     constructor(rootDirectory, qdrant, embeddings, config, onStateChange) {
         this.rootDirectory = rootDirectory;
         this.qdrant = qdrant;
@@ -126,10 +130,11 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            await this.indexSnapshot(snapshot);
+            await this.queueForBatch(snapshot);
             this.state.processedFiles += 1;
             await this.emitState();
         });
+        await this.flushBatch();
         await this.finishState();
     }
     async indexIncremental() {
@@ -156,11 +161,12 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            await this.indexSnapshot(snapshot);
+            await this.queueForBatch(snapshot);
             await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash);
             this.state.processedFiles += 1;
             await this.emitState();
         });
+        await this.flushBatch();
         const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath));
         await this.qdrant.deleteByFilePaths(removed);
         await this.finishState();
@@ -192,14 +198,50 @@ export class Indexer {
             language: detectLanguage(relativePath),
         };
     }
-    async indexSnapshot(snapshot) {
-        try {
+    /**
+       * Queue a snapshot for batched embedding + upsert. Returns a promise that
+       * resolves once the batch containing this snapshot has been flushed. When
+       * the queue reaches `concurrency` items, a flush is triggered immediately
+       * so embeddings run while other files are still being read.
+       */
+    async queueForBatch(snapshot) {
+        return new Promise((resolve) => {
+            this.batchQueue.push({ snapshot, resolve });
+            if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
+                this.batchFlush = this.flushBatch().finally(() => {
+                    this.batchFlush = null;
+                });
+            }
+        });
+    }
+    /**
+     * Flush all queued snapshots: chunk every file, embed all chunks in a
+     * single call, upsert all points in one request. This is the key
+     * performance optimization — transformers.js processes batches far
+     * more efficiently than per-file requests.
+     */
+    async flushBatch() {
+        const batch = this.batchQueue.splice(0);
+        if (batch.length === 0)
+            return;
+        const allChunks = [];
+        for (const { snapshot } of batch) {
             const chunks = [
                 extractFileSummary(snapshot.content),
                 ...chunkFile(snapshot.content, this.config.chunkMaxLines, this.config.chunkOverlapLines, snapshot.language),
             ];
-            const vectors = await this.embeddings.embed(chunks.map((chunk) => chunk.content));
-            const points = chunks.map((chunk, index) => ({
+            for (const chunk of chunks) {
+                allChunks.push({ chunk, snapshot });
+            }
+        }
+        if (allChunks.length === 0) {
+            for (const item of batch)
+                item.resolve();
+            return;
+        }
+        try {
+            const vectors = await this.embeddings.embed(allChunks.map(({ chunk }) => chunk.content));
+            const points = allChunks.map(({ chunk, snapshot }, index) => ({
                 id: uuidv4(),
                 vector: vectors[index],
                 payload: {
@@ -217,9 +259,12 @@ export class Indexer {
             this.state.totalChunks += points.length;
         }
         catch (error) {
-            this.recordError(snapshot.relativePath, error);
-            await this.emitState();
+            for (const { snapshot } of batch) {
+                this.recordError(snapshot.relativePath, error);
+            }
         }
+        for (const item of batch)
+            item.resolve();
     }
     async finishState() {
         const info = await this.qdrant.getCollectionInfo();
