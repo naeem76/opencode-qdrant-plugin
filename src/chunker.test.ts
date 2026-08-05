@@ -41,6 +41,153 @@ describe("extractFileSummary", () => {
   })
 })
 
+describe("extractFileSummary — structured summaries", () => {
+  test("extracts exported TS/JS symbols", () => {
+    const content = [
+      "import { x } from './x'",
+      "export function foo() { return 1 }",
+      "export class Bar { x = 1 }",
+      "export interface IBaz { a: number }",
+      "export type ID = string",
+      "export enum Color { Red, Blue }",
+      "export const PI = 3.14",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("function: foo")
+    expect(summary.content).toContain("class: Bar")
+    expect(summary.content).toContain("interface: IBaz")
+    expect(summary.content).toContain("type: ID")
+    expect(summary.content).toContain("enum: Color")
+    expect(summary.content).toContain("const: PI")
+  })
+
+  test("extracts Python def/class declarations", () => {
+    const content = [
+      '"""Module docstring."""',
+      "import os",
+      "def helper():",
+      "    pass",
+      "class App:",
+      "    def run(self):",
+      "        pass",
+      "async def fetch():",
+      "    pass",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("def: helper")
+    expect(summary.content).toContain("class: App")
+    expect(summary.content).toContain("def: fetch")
+  })
+
+  test("extracts Go func declarations", () => {
+    const content = [
+      "package main",
+      "func main() {}",
+      "func (s *Server) Start() {}",
+      "func helper() {}",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("func: main")
+    expect(summary.content).toContain("func: Start")
+    expect(summary.content).toContain("func: helper")
+  })
+
+  test("extracts Rust fn/struct/enum declarations", () => {
+    const content = [
+      "//! Module doc",
+      "pub fn run() {}",
+      "pub async fn fetch() {}",
+      "pub struct Config { x: u32 }",
+      "pub enum Mode { A, B }",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("fn: run")
+    expect(summary.content).toContain("fn: fetch")
+    expect(summary.content).toContain("struct: Config")
+    expect(summary.content).toContain("enum: Mode")
+  })
+
+  test("extracts JSDoc leading comment as part of summary", () => {
+    const content = [
+      "/**",
+      " * Greets a user by name.",
+      " * @param name - the user name",
+      " */",
+      "export function greet(name: string) {",
+      "  return `hi ${name}`",
+      "}",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("Greets a user by name")
+    expect(summary.content).toContain("function: greet")
+  })
+
+  test("extracts Python module docstring", () => {
+    const content = [
+      '"""Application entry point.',
+      "",
+      "Handles bootstrapping and CLI parsing.",
+      '"""',
+      "def main():",
+      "    pass",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("Application entry point")
+    expect(summary.content).toContain("def: main")
+  })
+
+  test("extracts markdown h1/h2 headers as sections", () => {
+    const content = [
+      "# README",
+      "intro",
+      "## Installation",
+      "steps",
+      "## Usage",
+      "more",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("h1: README")
+    expect(summary.content).toContain("h2: Installation")
+    expect(summary.content).toContain("h2: Usage")
+  })
+
+  test("skips shebang lines before docstring", () => {
+    const content = [
+      "#!/usr/bin/env node",
+      "/**",
+      " * CLI tool.",
+      " */",
+      "export function main() {}",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.content).toContain("CLI tool")
+    expect(summary.content).toContain("function: main")
+    expect(summary.content).not.toContain("usr/bin/env")
+  })
+
+  test("truncates signature list at MAX_SIGNATURES", () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `export function f${i}() {}`)
+    const summary = extractFileSummary(lines.join("\n"))
+    expect(summary.content).toMatch(/more$/)
+  })
+
+  test("falls back to head-of-file when no signatures and no doc", () => {
+    const content = "just\nsome\nplain\ntext\nfile"
+    const summary = extractFileSummary(content, 3)
+    expect(summary.content).toBe("just\nsome\nplain")
+  })
+
+  test("summary endLine covers the whole file when structured", () => {
+    const content = [
+      "export function top() {}",
+      "// middle comment",
+      "export function bottom() {}",
+    ].join("\n")
+    const summary = extractFileSummary(content)
+    expect(summary.endLine).toBe(3)
+  })
+})
+
 describe("chunkFile — boundary detection", () => {
   test("starts a new chunk at exported function declarations", () => {
     const fooBody = Array.from({ length: 8 }, () => "  return 1").join("\n")
