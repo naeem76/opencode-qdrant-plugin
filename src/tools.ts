@@ -24,11 +24,12 @@ export function createTools(
           messageID: context.messageID,
         })
         context.metadata({ title: "Qdrant plugin ping" })
+        const healthy = await qdrant.healthCheck()
         const output = [
           "opencode-qdrant plugin is loaded.",
           `Collection: ${qdrant.collectionName}`,
           `Provider: ${embeddings.name}`,
-          `Qdrant healthy: ${qdrant.isHealthy() ? "yes" : "no"}`,
+          `Qdrant healthy: ${healthy ? "yes" : "no"}`,
         ].join("\n")
         await log("info", "qdrant_ping completed", {
           sessionID: context.sessionID,

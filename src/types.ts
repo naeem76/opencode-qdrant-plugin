@@ -15,7 +15,6 @@ export type PluginOptions = {
   searchLimit?: number
   scoreThreshold?: number
   collectionName?: string
-  batchSize?: number
   indexOnStart?: boolean
   localWorkerCommand?: string
 }

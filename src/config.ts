@@ -31,7 +31,6 @@ export function resolveConfig(options?: PluginOptions): ResolvedConfig {
     searchLimit: options.searchLimit ?? 10,
     scoreThreshold: options.scoreThreshold ?? 0.3,
     collectionName: options.collectionName,
-    batchSize: options.batchSize ?? 50,
     indexOnStart: options.indexOnStart ?? true,
     localWorkerCommand: options.localWorkerCommand ?? "node",
   }
