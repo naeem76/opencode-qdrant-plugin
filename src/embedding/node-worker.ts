@@ -102,7 +102,7 @@ export class NodeWorkerEmbeddingProvider implements EmbeddingProvider {
     }
 
     this.ensureChild()
-    if (!this.child || !this.child.stdin.writable) {
+    if (!this.child?.stdin.writable) {
       throw new Error("Local embedding worker is not running")
     }
 
@@ -126,5 +126,14 @@ export class NodeWorkerEmbeddingProvider implements EmbeddingProvider {
       throw new Error("Local embedding worker returned an unexpected number of vectors")
     }
     return vectors
+  }
+
+  dispose(): void {
+    const child = this.child
+    this.child = null
+    if (!child) return
+    this.failAll(new Error("Local embedding worker disposed"))
+    child.stdin.end()
+    child.kill()
   }
 }

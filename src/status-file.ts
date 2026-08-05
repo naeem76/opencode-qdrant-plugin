@@ -68,6 +68,7 @@ export async function readStatusFile(rootDirectory: string): Promise<PersistedSt
 // ---------------------------------------------------------------------------
 
 export type ReindexTrigger = {
+  action?: "reindex" | "settings"
   full: boolean
   timestamp: number
 }
@@ -77,23 +78,30 @@ export function getTriggerFilePath(rootDirectory: string) {
 }
 
 export async function writeReindexTrigger(rootDirectory: string, full = false) {
+  await writeTrigger(rootDirectory, { action: "reindex", full, timestamp: Date.now() })
+}
+
+export async function writeTrigger(rootDirectory: string, trigger: ReindexTrigger) {
   const filePath = getTriggerFilePath(rootDirectory)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await atomicWriteFile(
     filePath,
-    JSON.stringify({ full, timestamp: Date.now() } satisfies ReindexTrigger),
+    JSON.stringify(trigger),
   )
   void cleanupLegacyFiles(rootDirectory)
 }
 
 export async function consumeReindexTrigger(rootDirectory: string): Promise<ReindexTrigger | null> {
   const filePath = getTriggerFilePath(rootDirectory)
+  const processingPath = `${filePath}.${process.pid}.${Date.now()}.processing`
   try {
-    const raw = await retryRead(filePath)
-    const trigger = JSON.parse(raw) as ReindexTrigger
-    await retryUnlink(filePath)
-    return trigger
+    await fs.rename(filePath, processingPath)
   } catch {
     return null
+  }
+  try {
+    return JSON.parse(await retryRead(processingPath)) as ReindexTrigger
+  } finally {
+    await retryUnlink(processingPath).catch(() => {})
   }
 }

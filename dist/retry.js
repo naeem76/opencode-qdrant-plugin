@@ -10,6 +10,14 @@ const DEFAULTS = { maxRetries: 3, baseDelayMs: 200 };
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function retryDelay(error, fallback) {
+    if (error instanceof Error &&
+        "retryAfterMs" in error &&
+        typeof error.retryAfterMs === "number") {
+        return Math.max(0, error.retryAfterMs);
+    }
+    return fallback;
+}
 export async function retryAsync(fn, shouldRetry, opts) {
     const { maxRetries, baseDelayMs } = { ...DEFAULTS, ...opts };
     let lastErr;
@@ -21,7 +29,7 @@ export async function retryAsync(fn, shouldRetry, opts) {
             lastErr = err;
             if (attempt === maxRetries || !shouldRetry(err, attempt))
                 break;
-            await sleep(baseDelayMs * 2 ** attempt);
+            await sleep(retryDelay(err, baseDelayMs * 2 ** attempt));
         }
     }
     throw lastErr;
@@ -50,9 +58,11 @@ export function isTransientNetworkError(err) {
  */
 export class HttpRetryableError extends Error {
     status;
-    constructor(status) {
+    retryAfterMs;
+    constructor(status, retryAfterMs) {
         super(`HTTP ${status}`);
         this.status = status;
+        this.retryAfterMs = retryAfterMs;
         this.name = "HttpRetryableError";
     }
 }

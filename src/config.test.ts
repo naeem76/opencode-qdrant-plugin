@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { resolveConfig } from "./config.js"
+import { configForEmbeddingProfile, embeddingProfileFromConfig } from "./profiles.js"
 import type { PluginOptions } from "./types.js"
 
 const VALID: PluginOptions = { qdrantUrl: "http://localhost:6333" }
@@ -78,6 +79,45 @@ describe("resolveConfig — api provider", () => {
       embeddingApiUrl: "https://custom.example.com/v1",
     })
     expect(cfg.embeddingApiUrl).toBe("https://custom.example.com/v1")
+  })
+})
+
+describe("resolveConfig — OpenRouter provider", () => {
+  test("uses OpenRouter free defaults and environment authentication", () => {
+    process.env.TEST_OPENROUTER_KEY = "secret"
+    const cfg = resolveConfig({
+      ...VALID,
+      embeddingProvider: "openrouter",
+      embeddingApiKeyEnv: "TEST_OPENROUTER_KEY",
+    })
+    expect(cfg.embeddingModel).toBe("nvidia/nemotron-3-embed-1b:free")
+    expect(cfg.embeddingDimensions).toBe(2048)
+    expect(cfg.embeddingApiSendDimensions).toBe(false)
+    expect(cfg.embeddingApiUrl).toBe("https://openrouter.ai/api/v1")
+    expect(cfg.embeddingApiKey).toBe("secret")
+    delete process.env.TEST_OPENROUTER_KEY
+  })
+
+  test("fails clearly when the configured environment key is missing", () => {
+    expect(() =>
+      resolveConfig({
+        ...VALID,
+        embeddingProvider: "openrouter",
+        embeddingApiKeyEnv: "MISSING_OPENROUTER_KEY",
+      }),
+    ).toThrow("MISSING_OPENROUTER_KEY")
+  })
+
+  test("preserves an explicit key when activating its profile", () => {
+    const cfg = resolveConfig({
+      ...VALID,
+      embeddingProvider: "openrouter",
+      embeddingApiKey: "explicit-secret",
+    })
+    const activated = configForEmbeddingProfile(cfg, embeddingProfileFromConfig(cfg))
+
+    expect(cfg.embeddingApiKeyEnv).toBeUndefined()
+    expect(activated.embeddingApiKey).toBe("explicit-secret")
   })
 })
 

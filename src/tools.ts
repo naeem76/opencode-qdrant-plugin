@@ -1,8 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { minimatch } from "minimatch"
-import { Indexer } from "./indexer.js"
-import { QdrantWrapper } from "./qdrant.js"
-import type { EmbeddingProvider, IndexingState, ResolvedConfig } from "./types.js"
+import type { IndexManager } from "./index-manager.js"
+import type { IndexingState, ResolvedConfig } from "./types.js"
 import { truncate } from "./utils.js"
 
 type ToolLogger = (level: "debug" | "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => Promise<void>
@@ -24,9 +23,7 @@ function formatDuration(state: IndexingState): string | null {
 }
 
 export function createTools(
-  qdrant: QdrantWrapper,
-  embeddings: EmbeddingProvider,
-  indexer: Indexer,
+  manager: IndexManager,
   config: ResolvedConfig,
   log: ToolLogger,
 ) {
@@ -40,11 +37,13 @@ export function createTools(
           messageID: context.messageID,
         })
         context.metadata({ title: "Qdrant plugin ping" })
-        const healthy = await qdrant.healthCheck()
+        const healthy = await manager.initialize()
+        const active = manager.hasActiveIndex() ? manager.getActiveInfo() : null
+        const state = manager.getState()
         const output = [
           "opencode-qdrant plugin is loaded.",
-          `Collection: ${qdrant.collectionName}`,
-          `Provider: ${embeddings.name}`,
+          `Collection: ${active?.collectionName ?? state.collectionName}`,
+          `Provider: ${active?.provider ?? state.provider}`,
           `Qdrant healthy: ${healthy ? "yes" : "no"}`,
         ].join("\n")
         await log("info", "qdrant_ping completed", {
@@ -71,21 +70,23 @@ export function createTools(
           chunk_type: args.chunk_type,
         })
         context.metadata({ title: `Searching codebase: ${args.query}` })
-        await qdrant.ensureCollection()
-        const [vector] = await embeddings.embed([args.query])
+        if (!(await manager.initialize())) {
+          throw new Error("Qdrant is unavailable; semantic search cannot run")
+        }
         // When a file_pattern filter is applied client-side, over-fetch to
         // compensate for matches that the glob will discard. Qdrant keyword
         // filters can't express glob patterns, so we pull a larger pool and
         // trim. Cap the pool at 20x the requested limit to bound cost.
         const searchLimit = args.file_pattern ? Math.min(args.limit * 20, 200) : args.limit
-        const results = await qdrant.search(vector, {
+        const results = await manager.embedAndSearch(args.query, {
           limit: searchLimit,
           scoreThreshold: config.scoreThreshold,
           chunkType: args.chunk_type,
         })
 
-        const filtered = args.file_pattern
-          ? results.filter((result) => minimatch(result.payload.file_path, args.file_pattern!))
+        const filePattern = args.file_pattern
+        const filtered = filePattern
+          ? results.filter((result) => minimatch(result.payload.file_path, filePattern))
           : results
 
         const output = filtered.slice(0, args.limit)
@@ -94,7 +95,7 @@ export function createTools(
             sessionID: context.sessionID,
             query: args.query,
           })
-          return `No semantic matches found for \"${args.query}\".`
+          return `No semantic matches found for "${args.query}".`
         }
 
         const structured = output.map((result) => ({
@@ -108,7 +109,7 @@ export function createTools(
         }))
 
         const response = [
-          `Found ${output.length} result(s) for \"${args.query}\":`,
+          `Found ${output.length} result(s) for "${args.query}":`,
           ...output.map((result, index) => {
             const payload = result.payload
             const header = `${index + 1}. [${result.score.toFixed(2)}] ${payload.file_path}:${payload.start_line}-${payload.end_line} (${payload.language})${payload.chunk_type === "summary" ? " [summary]" : ""}`
@@ -136,8 +137,8 @@ export function createTools(
           messageID: context.messageID,
         })
         context.metadata({ title: "Qdrant index status" })
-        const state = indexer.getState()
-        const info = await qdrant.getCollectionInfo()
+        const state = manager.getState()
+        const info = await manager.getCollectionInfo()
         const lines = [
           `Status: ${state.status}`,
           `Collection: ${state.collectionName}`,
@@ -148,19 +149,38 @@ export function createTools(
           `Healthy: ${info.healthy ? "yes" : "no"}`,
           `Errors: ${state.errorCount}`,
         ]
-const durationMs = formatDuration(state)
-    if (durationMs !== null) {
-      lines.push(`Duration: ${durationMs}`)
-    }
-    if (state.timings) {
-      const t = state.timings
-      lines.push(`Timings:`)
-      lines.push(`  Discovery: ${t.discovery}ms`)
-      lines.push(`  Chunking: ${t.chunking}ms`)
-      lines.push(`  Embedding: ${t.embedding}ms (${t.totalChunks} chunks, ${t.batches} batches, ${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`)
-      lines.push(`  Upsert: ${t.upsert}ms`)
-      lines.push(`  Total measured: ${t.discovery + t.chunking + t.embedding + t.upsert}ms`)
-    }
+        const durationMs = formatDuration(state)
+        if (durationMs !== null) {
+          lines.push(`Duration: ${durationMs}`)
+        }
+        if (state.deployment) {
+          const deployment = state.deployment
+          lines.push(`Deployment: ${deployment.phase}`)
+          if (deployment.active) {
+            lines.push(
+              `  Active: ${deployment.active.profile.provider}/${deployment.active.profile.model} (${deployment.active.profile.dimensions}d)`,
+            )
+          }
+          if (deployment.staging) {
+            lines.push(
+              `  Building: ${deployment.staging.profile.provider}/${deployment.staging.profile.model} (${deployment.staging.profile.dimensions}d)`,
+            )
+            lines.push("  Search remains pinned to the active index")
+          }
+          if (deployment.switchReason) lines.push(`  Reason: ${deployment.switchReason}`)
+          if (deployment.lastError) lines.push(`  Switch error: ${deployment.lastError}`)
+        }
+        if (state.timings) {
+          const t = state.timings
+          lines.push(`Timings:`)
+          lines.push(`  Discovery: ${t.discovery}ms`)
+          lines.push(`  Chunking: ${t.chunking}ms`)
+          lines.push(
+            `  Embedding: ${t.embedding}ms (${t.totalChunks} chunks, ${t.batches} batches, ${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`,
+          )
+          lines.push(`  Upsert: ${t.upsert}ms`)
+          lines.push(`  Total measured: ${t.discovery + t.chunking + t.embedding + t.upsert}ms`)
+        }
         const output = lines.join("\n")
         await log("info", "index_status completed", {
           sessionID: context.sessionID,
@@ -184,20 +204,25 @@ const durationMs = formatDuration(state)
           full: args.full,
         })
         context.metadata({ title: args.full ? "Starting full reindex" : "Starting incremental reindex" })
+        const healthy = await manager.initialize()
         if (args.full) {
-          indexer.startFull()
+          manager.startFull()
           await log("info", "reindex started", {
             sessionID: context.sessionID,
             full: true,
           })
-          return "Started full re-index in the background."
+          return healthy
+            ? "Started full re-index in the background."
+            : "Qdrant is unavailable; full re-index queued for recovery."
         }
-        indexer.startIncremental()
+        manager.startIncremental()
         await log("info", "reindex started", {
           sessionID: context.sessionID,
           full: false,
         })
-        return "Started incremental re-index in the background."
+        return healthy
+          ? "Started incremental re-index in the background."
+          : "Qdrant is unavailable; incremental re-index queued for recovery."
       },
     }),
   }

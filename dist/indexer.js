@@ -6,6 +6,7 @@ import { mapWithConcurrency } from "./concurrency.js";
 import { detectLanguage, sha256 } from "./utils.js";
 /** Maximum number of per-file errors retained in state. Older errors are dropped. */
 const MAX_RETAINED_ERRORS = 50;
+const API_FILE_GROUP_MULTIPLIER = 8;
 const emptyTimings = () => ({
     discovery: 0,
     chunking: 0,
@@ -118,11 +119,30 @@ export class Indexer {
     isRunning() {
         return this.currentRun !== null;
     }
+    async waitForIdle() {
+        if (!this.currentRun)
+            return;
+        try {
+            await this.currentRun;
+        }
+        catch {
+        }
+    }
+    async stop() {
+        this.currentAbort?.abort();
+        await this.waitForIdle();
+    }
     startIncremental() {
-        void this.runExclusive(() => this.indexIncremental());
+        void this.runIncremental();
     }
     startFull() {
-        void this.runExclusive(() => this.indexFull());
+        void this.runFull();
+    }
+    async runIncremental() {
+        await this.runExclusive(() => this.indexIncremental());
+    }
+    async runFull() {
+        await this.runExclusive(() => this.indexFull());
     }
     async runExclusive(run) {
         if (this.currentAbort) {
@@ -262,9 +282,12 @@ export class Indexer {
      * points exist so a failed embed never removes the last good version.
      */
     async processSnapshotBatches(snapshots, deleteStaleVersions) {
-        for (let start = 0; start < snapshots.length; start += this.config.concurrency) {
+        const groupSize = this.config.embeddingProvider === "local"
+            ? this.config.concurrency
+            : this.config.concurrency * API_FILE_GROUP_MULTIPLIER;
+        for (let start = 0; start < snapshots.length; start += groupSize) {
             await this.ensureNotAborted();
-            const batch = snapshots.slice(start, start + this.config.concurrency);
+            const batch = snapshots.slice(start, start + groupSize);
             const indexed = await this.indexSnapshotBatch(batch);
             if (indexed && deleteStaleVersions) {
                 await mapWithConcurrency(batch, this.config.concurrency, (snapshot) => this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash));

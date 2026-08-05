@@ -16,12 +16,13 @@ function makeMockClient() {
   const calls: { method: string; args: unknown[] }[] = []
   let points = new Map<string, { id: string; payload: PointPayload }>()
   let collectionExists = false
+  const aliases = new Map<string, string>()
 
   const client = {
     async getCollection(name: string) {
       calls.push({ method: "getCollection", args: [name] })
       if (!collectionExists) {
-        throw new Error("not found")
+        throw Object.assign(new Error("not found"), { status: 404 })
       }
       return { points_count: points.size }
     },
@@ -36,6 +37,30 @@ function makeMockClient() {
       calls.push({ method: "deleteCollection", args: [name] })
       collectionExists = false
       points = new Map()
+    },
+    async getAliases() {
+      calls.push({ method: "getAliases", args: [] })
+      return {
+        aliases: [...aliases].map(([alias_name, collection_name]) => ({
+          alias_name,
+          collection_name,
+        })),
+      }
+    },
+    async updateCollectionAliases(body: {
+      actions: Array<
+        | { delete_alias: { alias_name: string } }
+        | { create_alias: { alias_name: string; collection_name: string } }
+      >
+    }) {
+      calls.push({ method: "updateCollectionAliases", args: [body] })
+      for (const action of body.actions) {
+        if ("delete_alias" in action) aliases.delete(action.delete_alias.alias_name)
+        if ("create_alias" in action) {
+          aliases.set(action.create_alias.alias_name, action.create_alias.collection_name)
+        }
+      }
+      return true
     },
     async upsert(name: string, body: { wait: boolean; points: Array<{ id: string; vector: number[]; payload: PointPayload }> }) {
       calls.push({ method: "upsert", args: [name, body.points.length] })
@@ -79,7 +104,7 @@ function makeMockClient() {
       return { operation_id: 0 }
     },
   }
-  return { client, calls, getPoints: () => points }
+  return { client, calls, getPoints: () => points, aliases }
 }
 
 function makePoint(filePath: string, hash: string, type: "code" | "summary" = "code"): IndexedPoint {
@@ -246,5 +271,33 @@ describe("QdrantWrapper — deleteCollection", () => {
     // next ensureCollection should recreate it
     await wrapper.ensureCollection()
     expect(calls.filter((c) => c.method === "createCollection")).toHaveLength(2)
+  })
+})
+
+describe("QdrantWrapper — collection aliases", () => {
+  test("atomically creates and switches an alias", async () => {
+    const { client, calls, aliases } = makeMockClient()
+    const wrapper = new QdrantWrapper("http://localhost:6333", "physical", 384)
+    // @ts-expect-error — inject mock
+    wrapper.client = client
+    await wrapper.ensureCollection()
+
+    await wrapper.switchAlias("active", "physical", null)
+    expect(aliases.get("active")).toBe("physical")
+    expect(calls.filter((call) => call.method === "updateCollectionAliases")).toHaveLength(1)
+  })
+
+  test("refuses to switch when expected alias target changed", async () => {
+    const { client, aliases } = makeMockClient()
+    const wrapper = new QdrantWrapper("http://localhost:6333", "physical", 384)
+    // @ts-expect-error — inject mock
+    wrapper.client = client
+    await wrapper.ensureCollection()
+    aliases.set("active", "other")
+
+    await expect(wrapper.switchAlias("active", "physical", "expected")).rejects.toThrow(
+      "changed concurrently",
+    )
+    expect(aliases.get("active")).toBe("other")
   })
 })

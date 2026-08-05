@@ -18,6 +18,17 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
+function retryDelay(error: unknown, fallback: number): number {
+  if (
+    error instanceof Error &&
+    "retryAfterMs" in error &&
+    typeof (error as Error & { retryAfterMs?: unknown }).retryAfterMs === "number"
+  ) {
+    return Math.max(0, (error as Error & { retryAfterMs: number }).retryAfterMs)
+  }
+  return fallback
+}
+
 export async function retryAsync<T>(
   fn: () => Promise<T>,
   shouldRetry: (err: unknown, attempt: number) => boolean,
@@ -31,7 +42,7 @@ export async function retryAsync<T>(
     } catch (err) {
       lastErr = err
       if (attempt === maxRetries || !shouldRetry(err, attempt)) break
-      await sleep(baseDelayMs * 2 ** attempt)
+      await sleep(retryDelay(err, baseDelayMs * 2 ** attempt))
     }
   }
   throw lastErr
@@ -60,7 +71,10 @@ export function isTransientNetworkError(err: unknown): boolean {
  * the caller throws when the response status is retryable.
  */
 export class HttpRetryableError extends Error {
-  constructor(readonly status: number) {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
     super(`HTTP ${status}`)
     this.name = "HttpRetryableError"
   }

@@ -1,5 +1,8 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { isTransientNetworkError, retryAsync } from "./retry.js";
+function isNotFoundError(error) {
+    return error instanceof Error && error.status === 404;
+}
 export class QdrantWrapper {
     qdrantUrl;
     collectionName;
@@ -47,7 +50,9 @@ export class QdrantWrapper {
         try {
             await this.client.getCollection(this.collectionName);
         }
-        catch {
+        catch (error) {
+            if (!isNotFoundError(error))
+                throw error;
             await this.client.createCollection(this.collectionName, {
                 vectors: { size: this.vectorSize, distance: "Cosine" },
             });
@@ -172,9 +177,65 @@ export class QdrantWrapper {
         try {
             await this.client.deleteCollection(this.collectionName);
         }
-        catch {
+        catch (error) {
+            if (!isNotFoundError(error))
+                throw error;
         }
         this.ensured = false;
         this.ensurePromise = null;
+    }
+    async collectionExists(collectionName = this.collectionName) {
+        try {
+            await this.client.getCollection(collectionName);
+            return true;
+        }
+        catch (error) {
+            if (isNotFoundError(error))
+                return false;
+            throw error;
+        }
+    }
+    async getAliasTarget(aliasName) {
+        const response = await this.client.getAliases();
+        return response.aliases.find((alias) => alias.alias_name === aliasName)?.collection_name ?? null;
+    }
+    /**
+     * Atomically point an alias at a physical collection. When expectedCurrent
+     * is supplied, refuse the switch if another process changed the alias.
+     */
+    async switchAlias(aliasName, targetCollection, expectedCurrent) {
+        if (!(await this.collectionExists(targetCollection))) {
+            throw new Error(`Cannot activate missing collection '${targetCollection}'`);
+        }
+        const current = await this.getAliasTarget(aliasName);
+        if (expectedCurrent !== undefined && current !== expectedCurrent) {
+            throw new Error(`Alias '${aliasName}' changed concurrently (expected '${expectedCurrent}', found '${current}')`);
+        }
+        if (current === targetCollection)
+            return;
+        await this.client.updateCollectionAliases({
+            actions: [
+                ...(current ? [{ delete_alias: { alias_name: aliasName } }] : []),
+                {
+                    create_alias: {
+                        alias_name: aliasName,
+                        collection_name: targetCollection,
+                    },
+                },
+            ],
+        });
+        const activated = await this.getAliasTarget(aliasName);
+        if (activated !== targetCollection) {
+            throw new Error(`Alias '${aliasName}' did not activate '${targetCollection}'`);
+        }
+    }
+    async deleteCollectionByName(collectionName) {
+        try {
+            await this.client.deleteCollection(collectionName);
+        }
+        catch (error) {
+            if (!isNotFoundError(error))
+                throw error;
+        }
     }
 }

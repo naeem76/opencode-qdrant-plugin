@@ -1,20 +1,32 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { resolveConfig } from "./config.js"
-import { createEmbeddingProvider } from "./embedding/index.js"
-import { Indexer } from "./indexer.js"
-import { QdrantWrapper } from "./qdrant.js"
-import { consumeReindexTrigger, writeStatusFile } from "./status-file.js"
+import { readEmbeddingSettings } from "./embedding-settings.js"
+import { IndexManager } from "./index-manager.js"
+import { readStoredOpenRouterApiKey } from "./opencode-auth.js"
+import { embeddingProfileFromConfig } from "./profiles.js"
+import {
+  consumeReindexTrigger,
+  readStatusFile,
+  writeStatusFile,
+} from "./status-file.js"
 import { createTools } from "./tools.js"
 import { startFileWatcher, type FileWatcher } from "./watcher.js"
-import { collectionNameForProject } from "./utils.js"
 import type { IndexingState, PluginOptions } from "./types.js"
 
 const server: Plugin = async (input, rawOptions) => {
+  let credentialLoadedFromOpenCode = false
+  const refreshStoredOpenRouterKey = async () => {
+    if (!credentialLoadedFromOpenCode && process.env.OPENROUTER_API_KEY?.trim()) return
+    const storedApiKey = await readStoredOpenRouterApiKey()
+    if (storedApiKey) {
+      process.env.OPENROUTER_API_KEY = storedApiKey
+      credentialLoadedFromOpenCode = true
+    }
+  }
+  await refreshStoredOpenRouterKey()
   const options = resolveConfig(rawOptions as PluginOptions | undefined)
-  const collectionName =
-    options.collectionName ?? collectionNameForProject(input.directory, options.embeddingDimensions)
-  const qdrant = new QdrantWrapper(options.qdrantUrl, collectionName, options.embeddingDimensions)
-  const embeddings = createEmbeddingProvider(options)
+  const settings = await readEmbeddingSettings(input.directory)
+  const desiredProfile = settings?.desiredProfile ?? embeddingProfileFromConfig(options)
 
   const toast = async (
     message: string,
@@ -32,45 +44,6 @@ const server: Plugin = async (input, rawOptions) => {
 
   let lastToastStatus: IndexingState["status"] | null = null
 
-  const indexer = new Indexer(input.directory, qdrant, embeddings, options, async (state) => {
-    await writeStatusFile(input.directory, state)
-
-    // Toast on status transitions only (not every progress tick)
-    if (state.status !== lastToastStatus) {
-      lastToastStatus = state.status
-      switch (state.status) {
-        case "discovering":
-          await toast("Discovering files to index...", "info", 3000)
-          break
-        case "indexing":
-          await toast(`Indexing ${state.totalFiles} files...`, "info", 4000)
-          break
-        case "complete":
-          if (state.totalChunks === 0 && state.skippedFiles === state.processedFiles) {
-            await toast(
-              `Index up to date (${state.collectionPointCount ?? 0} chunks)`,
-              "success",
-              4000,
-            )
-          } else {
-            await toast(
-              `Indexed ${state.processedFiles} files (${state.totalChunks} chunks, ${state.skippedFiles} unchanged)`,
-              "success",
-              6000,
-            )
-          }
-          break
-        case "error":
-          await toast(
-            `Indexing finished with ${state.errorCount} error(s)`,
-            "warning",
-            8000,
-          )
-          break
-      }
-    }
-  })
-
   const log = async (
     level: "debug" | "info" | "warn" | "error",
     message: string,
@@ -86,34 +59,103 @@ const server: Plugin = async (input, rawOptions) => {
     })
   }
 
-  const healthy = await qdrant.healthCheck()
+  const persisted = await readStatusFile(input.directory)
+  const manager = new IndexManager(
+    input.directory,
+    options,
+    desiredProfile,
+    persisted,
+    async (state) => {
+      await writeStatusFile(input.directory, state)
+
+      if (state.status !== lastToastStatus) {
+        lastToastStatus = state.status
+        switch (state.status) {
+          case "discovering":
+            await toast("Discovering files to index...", "info", 3000)
+            break
+          case "indexing":
+            await toast(`Indexing ${state.totalFiles} files...`, "info", 4000)
+            break
+          case "switching":
+            await toast("Switching to the new embedding index...", "info", 5000)
+            break
+          case "rate_limited":
+            await toast("Cloud embeddings are rate limited", "warning", 8000)
+            break
+          case "complete":
+            await toast(
+              `Index ready (${state.collectionPointCount ?? 0} chunks)`,
+              "success",
+              4000,
+            )
+            break
+          case "error":
+            await toast(
+              `Indexing finished with ${state.errorCount} error(s)`,
+              "warning",
+              8000,
+            )
+            break
+        }
+      }
+    },
+    log,
+    settings?.fallbackToLocalOnRateLimit ?? false,
+  )
+
+  let fileWatcher: FileWatcher | null = null
+  const ensureWatcher = () => {
+    if (fileWatcher || !options.watchFiles || !manager.hasActiveIndex()) return
+    fileWatcher = startFileWatcher({
+      rootDirectory: input.directory,
+      debounceMs: options.watchDebounceMs,
+      onChange: async (paths) => {
+        if (!(await manager.healthCheck())) return
+        await log("info", `Reindex triggered by file watcher (${paths.length} changed)`)
+        manager.startIncremental()
+      },
+    })
+  }
+
+  const healthy = await manager.initialize()
   if (healthy) {
-    await qdrant.ensureCollection()
-    await writeStatusFile(input.directory, indexer.getState())
-    if (options.indexOnStart) {
-      indexer.startIncremental()
-    }
-    await log("info", `Initialized Qdrant index ${collectionName}`)
+    const active = manager.getActiveInfo()
+    await log("info", `Initialized Qdrant index ${active.collectionName}`)
+    ensureWatcher()
   } else {
     await log("warn", `Qdrant unavailable at ${options.qdrantUrl}. Plugin loaded in degraded mode.`)
-    const state = indexer.getState()
-    state.status = "unavailable"
-    await writeStatusFile(input.directory, state)
   }
 
   // Poll for reindex trigger file written by TUI Ctrl+P command
   const triggerPollInterval = setInterval(async () => {
     try {
       const trigger = await consumeReindexTrigger(input.directory)
-      if (trigger && !indexer.isRunning()) {
+      if (trigger) {
+        if (trigger.action === "settings") {
+          await refreshStoredOpenRouterKey()
+          const nextSettings = await readEmbeddingSettings(input.directory)
+          if (nextSettings) {
+            await log("info", "Embedding provider switch triggered from TUI", {
+              provider: nextSettings.desiredProfile.provider,
+              model: nextSettings.desiredProfile.model,
+            })
+            await manager.initialize()
+            void manager.switchTo(nextSettings.desiredProfile, "user_requested")
+          }
+          return
+        }
         await log("info", `Reindex triggered from TUI (full=${trigger.full})`)
-        if (await qdrant.healthCheck()) {
+        if (await manager.initialize()) {
+          ensureWatcher()
           if (trigger.full) {
-            indexer.startFull()
+            manager.startFull()
           } else {
-            indexer.startIncremental()
+            manager.startIncremental()
           }
         } else {
+          if (trigger.full) manager.startFull()
+          else manager.startIncremental()
           await toast("Qdrant unavailable — cannot reindex", "error")
         }
       }
@@ -126,31 +168,21 @@ const server: Plugin = async (input, rawOptions) => {
   // when files change. Skips binary / sensitive / generated paths and
   // SKIP_DIRS (.git, node_modules, dist, ...) so editor noise doesn't
   // fire constant reindexes.
-  let fileWatcher: FileWatcher | null = null
-  if (options.watchFiles && healthy) {
-    fileWatcher = startFileWatcher({
-      rootDirectory: input.directory,
-      debounceMs: options.watchDebounceMs,
-      onChange: async (paths) => {
-        if (indexer.isRunning()) return
-        if (!(await qdrant.healthCheck())) return
-        await log("info", `Reindex triggered by file watcher (${paths.length} changed)`)
-        indexer.startIncremental()
-      },
-    })
-  }
-
   return {
-    tool: createTools(qdrant, embeddings, indexer, options, log),
+    tool: createTools(manager, options, log),
     event: async ({ event }) => {
-      if (event.type === "session.created" && options.indexOnStart && !indexer.isRunning()) {
-        if (await qdrant.healthCheck()) {
-          indexer.startIncremental()
+      if (event.type === "session.created") {
+        if (await manager.initialize()) {
+          ensureWatcher()
+        }
+        if (options.indexOnStart && !manager.isRunning() && manager.hasActiveIndex()) {
+          manager.startIncremental()
         }
       }
       if (event.type === "server.instance.disposed") {
         clearInterval(triggerPollInterval)
         fileWatcher?.close()
+        await manager.dispose()
       }
     },
   }

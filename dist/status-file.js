@@ -50,20 +50,27 @@ export function getTriggerFilePath(rootDirectory) {
     return path.join(getProjectDataDir(rootDirectory), "trigger.json");
 }
 export async function writeReindexTrigger(rootDirectory, full = false) {
+    await writeTrigger(rootDirectory, { action: "reindex", full, timestamp: Date.now() });
+}
+export async function writeTrigger(rootDirectory, trigger) {
     const filePath = getTriggerFilePath(rootDirectory);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await atomicWriteFile(filePath, JSON.stringify({ full, timestamp: Date.now() }));
+    await atomicWriteFile(filePath, JSON.stringify(trigger));
     void cleanupLegacyFiles(rootDirectory);
 }
 export async function consumeReindexTrigger(rootDirectory) {
     const filePath = getTriggerFilePath(rootDirectory);
+    const processingPath = `${filePath}.${process.pid}.${Date.now()}.processing`;
     try {
-        const raw = await retryRead(filePath);
-        const trigger = JSON.parse(raw);
-        await retryUnlink(filePath);
-        return trigger;
+        await fs.rename(filePath, processingPath);
     }
     catch {
         return null;
+    }
+    try {
+        return JSON.parse(await retryRead(processingPath));
+    }
+    finally {
+        await retryUnlink(processingPath).catch(() => { });
     }
 }

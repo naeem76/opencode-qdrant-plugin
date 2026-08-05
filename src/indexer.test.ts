@@ -117,6 +117,19 @@ describe("Indexer batching", () => {
     expect(getEmbedCalls()).toBe(3)
   })
 
+  test("uses wider file groups for remote embedding schedulers", async () => {
+    await writeFiles(10)
+    const { qdrant, embeddings, getEmbedCalls } = mocks()
+    const remoteConfig = { ...config(2), embeddingProvider: "openrouter" as const }
+    const indexer = new Indexer(root, qdrant as never, embeddings, remoteConfig)
+
+    indexer.startFull()
+    await waitForCompletion(indexer)
+
+    expect(indexer.getState().processedFiles).toBe(10)
+    expect(getEmbedCalls()).toBe(1)
+  })
+
   test("deletes stale versions only after replacement points are upserted", async () => {
     await writeFiles(3)
     const existing = new Map(Array.from({ length: 3 }, (_, index) => [`file-${index}.ts`, "old"]))

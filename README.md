@@ -8,6 +8,8 @@ Semantic codebase indexing plugin for [OpenCode](https://github.com/nichochar/op
 - Watches the project tree and triggers a debounced incremental reindex on save
 - Heuristic chunking at function/class boundaries with file summaries
 - Local embeddings (HuggingFace transformers.js, all-MiniLM-L6-v2, 384d) or API embeddings (OpenAI-compatible, 1536d)
+- Interactive Local / OpenRouter Free / OpenRouter Paid setup from the command palette
+- Blue-green model switching: active search remains available while a new collection builds
 - Per-project Qdrant collections (derived from project path + embedding dimensions)
 - Agent tools: `codebase_search`, `index_status`, `reindex`, `qdrant_ping`
 - TUI sidebar showing live indexing status
@@ -117,11 +119,13 @@ Options are passed as the second element of the plugin tuple:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `qdrantUrl` | `string` | **required** | Qdrant server URL |
-| `embeddingProvider` | `"local" \| "api"` | `"local"` | Embedding backend |
+| `embeddingProvider` | `"local" \| "api" \| "openrouter"` | `"local"` | Embedding backend |
 | `embeddingModel` | `string` | `Xenova/all-MiniLM-L6-v2` (local) / `text-embedding-3-small` (api) | Model name |
 | `embeddingApiKey` | `string` | - | Required when provider is `"api"` |
+| `embeddingApiKeyEnv` | `string` | `OPENROUTER_API_KEY` for OpenRouter | Environment variable containing the API key; preferred over storing secrets in config |
 | `embeddingApiUrl` | `string` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
-| `embeddingDimensions` | `number` | `384` (local) / `1536` (api) | Vector dimensions |
+| `embeddingApiSendDimensions` | `boolean` | `false` (OpenRouter) / `true` (api) | Send the optional `dimensions` API parameter |
+| `embeddingDimensions` | `number` | `384` (local) / `1536` (api) / `2048` (OpenRouter) | Vector dimensions |
 | `indexOnStart` | `boolean` | `true` | Index when project opens |
 | `maxFileSize` | `number` | `100000` | Skip files larger than this (bytes) |
 | `chunkMaxLines` | `number` | `80` | Max lines per chunk |
@@ -136,6 +140,8 @@ Options are passed as the second element of the plugin tuple:
 | `watchDebounceMs` | `number` | `2000` | Debounce window for file-watch-triggered reindex |
 | `localEmbeddingBatchSize` | `number` | `16` | Local embedding micro-batch size (texts are length-sorted to reduce padding) |
 | `localEmbeddingDtype` | `"auto" \| "q4" \| "q8" \| "fp32"` | `"q8"` | Local model dtype; `q8` was fastest in CPU benchmarks |
+| `openrouterDataCollection` | `"allow" \| "deny"` | `"allow"` | OpenRouter provider data-collection routing policy |
+| `openrouterZdr` | `boolean` | `false` | Require an OpenRouter Zero Data Retention route |
 | `localWorkerCommand` | `string` | `"node"` | Command to run the embedding worker |
 
 ## Agent tools
@@ -182,7 +188,24 @@ Shows a live status indicator:
 
 - **Qdrant: Show indexing status** — Toast with current state
 - **Qdrant: Reindex project (incremental)** — Triggers incremental reindex
-- **Qdrant: Reindex project (full)** — Drops collection and rebuilds
+- **Qdrant: Reindex project (full)** — Builds a fresh generation and atomically activates it
+- **Qdrant: Configure embeddings** — Choose Local, automatically configure the recommended OpenRouter free model, or select a paid OpenRouter embedding model
+
+### OpenRouter setup
+
+Both free and paid OpenRouter embedding models require an API key. If no key is configured, **Qdrant: Configure embeddings** prompts for one and saves it as the separate `opencode-qdrant-openrouter` credential in OpenCode's permissions-restricted `auth.json`. The key is never written to plugin settings, status files, or logs.
+
+Alternatively, set an environment variable before starting OpenCode; it takes precedence over the stored plugin credential:
+
+```powershell
+[Environment]::SetEnvironmentVariable("OPENROUTER_API_KEY", "your-key", "User")
+```
+
+Run **Qdrant: Configure embeddings**. Free mode discovers the current embedding catalog, selects the tested preferred free model, and probes its actual output dimensions. Paid mode presents a searchable list and probes the selected model.
+
+Embedding throughput is provider-specific. Local models use bounded 16-text CPU micro-batches. Remote providers combine a wider file window into requests of up to 100 texts; paid OpenRouter starts at two concurrent requests, ramps up to eight after sustained success, and halves concurrency on `429`. Free OpenRouter is paced at its documented 20 requests/minute limit. All remote modes honor `Retry-After`, and one-text search embeddings are prioritized over queued indexing batches.
+
+Changing provider, model, dimensions, or dtype creates a fresh physical collection the first time that exact profile is used. The current collection stays searchable through a stable Qdrant alias while the staging generation builds. After verification, the alias switches atomically and the previous same-model index is retained for instant switch-back. Switching back to an already-built model only flips the alias and runs an incremental catch-up; different models never share vectors. Exhausted OpenRouter 429 responses can trigger the same full-rebuild flow back to local MiniLM.
 
 ## Architecture
 
@@ -191,6 +214,7 @@ opencode.json ──> server plugin ──> Qdrant (vector DB)
                     ├── file discovery (git ls-files)
                     ├── chunker (heuristic boundary detection)
                     ├── embedding provider (local worker / API)
+                    ├── index manager (active alias + staging generation)
                     ├── indexer (incremental, concurrent)
                     ├── agent tools (search, reindex, status, ping)
                     └── writes <userDataDir>/projects/<key>/status.json
