@@ -144,19 +144,16 @@ export class QdrantWrapper {
     return hashes
   }
 
-  async deleteByFilePath(filePath: string) {
+  async deleteByFilePaths(filePaths: string[]) {
+    if (filePaths.length === 0) {
+      return
+    }
     await this.ensureCollection()
     await this.client.delete(this.collectionName, {
       wait: true,
-      filter: { must: [{ key: "file_path", match: { value: filePath } }] },
+      filter: { should: filePaths.map((filePath) => ({ key: "file_path", match: { value: filePath } })) },
     })
     this.healthy = true
-  }
-
-  async deleteByFilePaths(filePaths: string[]) {
-    for (const filePath of filePaths) {
-      await this.deleteByFilePath(filePath)
-    }
   }
 
   async deleteStaleFileVersion(filePath: string, currentHash: string) {
