@@ -3,11 +3,32 @@ import { createElement, insert, setProp } from "@opentui/solid";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { retryReadSync, atomicWriteFileSync } from "./fs-helpers.js";
+import { getProjectDataDir } from "./paths.js";
 function statusFilePath(rootDir) {
-    return path.join(rootDir, ".opencode", "qdrant-status.json");
+    return path.join(getProjectDataDir(rootDir), "status.json");
 }
 function triggerFilePath(rootDir) {
+    return path.join(getProjectDataDir(rootDir), "trigger.json");
+}
+function legacyStatusPath(rootDir) {
+    return path.join(rootDir, ".opencode", "qdrant-status.json");
+}
+function legacyTriggerPath(rootDir) {
     return path.join(rootDir, ".opencode", "qdrant-reindex-trigger.json");
+}
+const LEGACY_CLEANED = new Set();
+function cleanupLegacyFilesSync(rootDir) {
+    if (LEGACY_CLEANED.has(rootDir))
+        return;
+    LEGACY_CLEANED.add(rootDir);
+    for (const legacy of [legacyStatusPath(rootDir), legacyTriggerPath(rootDir)]) {
+        try {
+            fs.unlinkSync(legacy);
+        }
+        catch {
+            // ENOENT or locked — ignore
+        }
+    }
 }
 function readStatus(rootDir) {
     try {
@@ -21,6 +42,7 @@ function writeTriggerFile(rootDir, full) {
     const fp = triggerFilePath(rootDir);
     fs.mkdirSync(path.dirname(fp), { recursive: true });
     atomicWriteFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }));
+    cleanupLegacyFilesSync(rootDir);
 }
 // ---------------------------------------------------------------------------
 // Sidebar component (no JSX — .ts files don't support it in Bun)
@@ -40,6 +62,8 @@ function StatusView(props) {
                 return theme().success;
             case "error":
                 return theme().warning;
+            case "unavailable":
+                return theme().error;
             case "indexing":
             case "discovering":
                 return theme().info;
@@ -62,11 +86,13 @@ function StatusView(props) {
                 return `${s.collectionPointCount ?? 0} chunks indexed`;
             case "error":
                 return `${s.errorCount} error(s)`;
+            case "unavailable":
+                return "Qdrant unavailable";
         }
     };
     const detail = () => {
         const s = status();
-        if (!s || s.status === "idle")
+        if (!s || s.status === "idle" || s.status === "unavailable")
             return null;
         if (s.status === "complete" || s.status === "error") {
             return `${s.processedFiles} files (${s.skippedFiles} unchanged)`;
@@ -110,6 +136,14 @@ function StatusView(props) {
 // TUI plugin entry
 // ---------------------------------------------------------------------------
 const tui = async (api) => {
+    const initialStatus = readStatus(api.state.path.directory);
+    if (initialStatus?.status === "unavailable") {
+        api.ui.toast({
+            title: "Qdrant",
+            message: "Qdrant is unavailable. Semantic indexing and search are disabled.",
+            variant: "error",
+        });
+    }
     api.slots.register({
         order: 150,
         slots: {

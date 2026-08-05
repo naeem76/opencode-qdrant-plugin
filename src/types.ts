@@ -76,7 +76,13 @@ export type FileSnapshot = FileEntry & {
   language: string
 }
 
-export type IndexingStatus = "idle" | "discovering" | "indexing" | "complete" | "error"
+export type IndexingStatus =
+  | "idle"
+  | "discovering"
+  | "indexing"
+  | "complete"
+  | "error"
+  | "unavailable"
 
 export type IndexingError = {
   file: string

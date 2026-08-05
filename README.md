@@ -187,17 +187,36 @@ opencode.json ──> server plugin ──> Qdrant (vector DB)
                     ├── embedding provider (local worker / API)
                     ├── indexer (incremental, concurrent)
                     ├── agent tools (search, reindex, status, ping)
-                    └── writes .opencode/qdrant-status.json
+                    └── writes <userDataDir>/projects/<key>/status.json
 
 tui.json ──> TUI plugin
-               ├── reads .opencode/qdrant-status.json (polls 2s)
+               ├── reads <userDataDir>/projects/<key>/status.json (polls 2s)
                ├── sidebar_content slot (status view)
                ├── Ctrl+P commands
-               └── writes .opencode/qdrant-reindex-trigger.json
+               └── writes <userDataDir>/projects/<key>/trigger.json
                      ↑ server polls this to trigger reindex from TUI
 ```
 
 Server and TUI plugins communicate via the filesystem — the server writes status, the TUI reads it. Reindex commands go the other direction via a trigger file.
+
+### Storage location
+
+Plugin state lives in the per-user OS data directory, keyed by a stable hash of the project path:
+
+| Platform | Base directory |
+|---|---|
+| Windows | `%LOCALAPPDATA%\opencode-qdrant\projects\<key>\` |
+| macOS   | `~/Library/Application Support/opencode-qdrant/projects/<key>/` |
+| Linux   | `$XDG_DATA_HOME/opencode-qdrant/projects/<key>/` (or `~/.local/share/...`) |
+
+`<key>` is a 12-char hash derived from a **normalized** project path, so the same repo opened from Windows native, Git Bash / MSYS, Cygwin, or WSL resolves to the same key. For example, all of these share one state directory and one Qdrant collection:
+
+- `D:\Work-Personal-2025\opencode-qdrant` (Windows)
+- `/mnt/d/Work-Personal-2025/opencode-qdrant` (WSL)
+- `/d/Work-Personal-2025/opencode-qdrant` (Git Bash)
+- `/cygdrive/d/Work-Personal-2025/opencode-qdrant` (Cygwin)
+
+**Upgrading from pre-normalization versions**: the Qdrant collection name also now uses the normalized key, so existing installations will do one fresh reindex on first start after upgrade. Orphaned collections from before the upgrade can be dropped from Qdrant manually. The plugin automatically deletes legacy `.opencode/qdrant-status.json` and `.opencode/qdrant-reindex-trigger.json` files from each project on first write.
 
 ## Local development
 

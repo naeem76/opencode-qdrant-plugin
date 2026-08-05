@@ -4,6 +4,7 @@ import { createElement, insert, setProp } from "@opentui/solid"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { retryReadSync, atomicWriteFileSync } from "./fs-helpers.js"
+import { getProjectDataDir } from "./paths.js"
 import type { IndexingState } from "./types.js"
 
 // ---------------------------------------------------------------------------
@@ -13,11 +14,33 @@ import type { IndexingState } from "./types.js"
 type QdrantStatus = IndexingState & { updatedAt: number }
 
 function statusFilePath(rootDir: string) {
-  return path.join(rootDir, ".opencode", "qdrant-status.json")
+  return path.join(getProjectDataDir(rootDir), "status.json")
 }
 
 function triggerFilePath(rootDir: string) {
+  return path.join(getProjectDataDir(rootDir), "trigger.json")
+}
+
+function legacyStatusPath(rootDir: string) {
+  return path.join(rootDir, ".opencode", "qdrant-status.json")
+}
+
+function legacyTriggerPath(rootDir: string) {
   return path.join(rootDir, ".opencode", "qdrant-reindex-trigger.json")
+}
+
+const LEGACY_CLEANED = new Set<string>()
+
+function cleanupLegacyFilesSync(rootDir: string) {
+  if (LEGACY_CLEANED.has(rootDir)) return
+  LEGACY_CLEANED.add(rootDir)
+  for (const legacy of [legacyStatusPath(rootDir), legacyTriggerPath(rootDir)]) {
+    try {
+      fs.unlinkSync(legacy)
+    } catch {
+      // ENOENT or locked — ignore
+    }
+  }
 }
 
 function readStatus(rootDir: string): QdrantStatus | null {
@@ -32,6 +55,7 @@ function writeTriggerFile(rootDir: string, full: boolean) {
   const fp = triggerFilePath(rootDir)
   fs.mkdirSync(path.dirname(fp), { recursive: true })
   atomicWriteFileSync(fp, JSON.stringify({ full, timestamp: Date.now() }))
+  cleanupLegacyFilesSync(rootDir)
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +79,8 @@ function StatusView(props: { api: Parameters<TuiPlugin>[0] }) {
         return theme().success
       case "error":
         return theme().warning
+      case "unavailable":
+        return theme().error
       case "indexing":
       case "discovering":
         return theme().info
@@ -77,12 +103,14 @@ function StatusView(props: { api: Parameters<TuiPlugin>[0] }) {
         return `${s.collectionPointCount ?? 0} chunks indexed`
       case "error":
         return `${s.errorCount} error(s)`
+      case "unavailable":
+        return "Qdrant unavailable"
     }
   }
 
   const detail = () => {
     const s = status()
-    if (!s || s.status === "idle") return null
+    if (!s || s.status === "idle" || s.status === "unavailable") return null
     if (s.status === "complete" || s.status === "error") {
       return `${s.processedFiles} files (${s.skippedFiles} unchanged)`
     }
@@ -134,6 +162,15 @@ function StatusView(props: { api: Parameters<TuiPlugin>[0] }) {
 // ---------------------------------------------------------------------------
 
 const tui: TuiPlugin = async (api) => {
+  const initialStatus = readStatus(api.state.path.directory)
+  if (initialStatus?.status === "unavailable") {
+    api.ui.toast({
+      title: "Qdrant",
+      message: "Qdrant is unavailable. Semantic indexing and search are disabled.",
+      variant: "error",
+    })
+  }
+
   api.slots.register({
     order: 150,
     slots: {

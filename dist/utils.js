@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
+import { projectKey } from "./paths.js";
 const LANGUAGE_BY_EXTENSION = {
     ".ts": "typescript",
     ".tsx": "typescript",
@@ -73,5 +74,5 @@ export function isGeneratedLikePath(filePath) {
     ].some((needle) => normalized.endsWith(needle) || normalized.includes(`/${needle}`));
 }
 export function collectionNameForProject(basePath, dimensions) {
-    return `opencode_${sha256(basePath).slice(0, 12)}_${dimensions}`;
+    return `opencode_${projectKey(basePath)}_${dimensions}`;
 }

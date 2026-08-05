@@ -88,13 +88,16 @@ const server: Plugin = async (input, rawOptions) => {
   const healthy = await qdrant.healthCheck()
   if (healthy) {
     await qdrant.ensureCollection()
+    await writeStatusFile(input.directory, indexer.getState())
     if (options.indexOnStart) {
       indexer.startIncremental()
     }
     await log("info", `Initialized Qdrant index ${collectionName}`)
   } else {
     await log("warn", `Qdrant unavailable at ${options.qdrantUrl}. Plugin loaded in degraded mode.`)
-    await toast(`Qdrant unavailable at ${options.qdrantUrl}`, "error", 8000)
+    const state = indexer.getState()
+    state.status = "unavailable"
+    await writeStatusFile(input.directory, state)
   }
 
   // Poll for reindex trigger file written by TUI Ctrl+P command
