@@ -17,6 +17,24 @@ import { QdrantWrapper } from "./qdrant.js"
 /** Maximum number of per-file errors retained in state. Older errors are dropped. */
 const MAX_RETAINED_ERRORS = 50
 
+/** Cumulative timing for the current run, in ms. Reset on each indexFull/indexIncremental. */
+interface RunTimings {
+  discovery: number
+  chunking: number
+  embedding: number
+  upsert: number
+  batches: number
+  totalChunks: number
+}
+const emptyTimings = (): RunTimings => ({
+  discovery: 0,
+  chunking: 0,
+  embedding: 0,
+  upsert: 0,
+  batches: 0,
+  totalChunks: 0,
+})
+
 interface QueuedSnapshot {
   snapshot: FileSnapshot
   resolve: () => void
@@ -26,6 +44,7 @@ export class Indexer {
   private currentAbort: AbortController | null = null
   private currentRun: Promise<void> | null = null
   private state: IndexingState
+  private timings: RunTimings = emptyTimings()
 
   /** Snapshots waiting for the next batch embed+upsert flush. */
   private batchQueue: QueuedSnapshot[] = []
@@ -134,11 +153,14 @@ export class Indexer {
   }
 
   private async indexFull() {
+    this.timings = emptyTimings()
     this.resetState("discovering")
     await this.emitState()
     await this.qdrant.deleteCollection()
     await this.qdrant.ensureCollection()
+    const t0 = Date.now()
     const files = await discoverFiles(this.rootDirectory, this.config)
+    this.timings.discovery = Date.now() - t0
     this.state.totalFiles = files.length
     this.state.status = "indexing"
     await this.emitState()
@@ -155,14 +177,18 @@ export class Indexer {
       await this.emitState()
     })
     await this.flushBatch()
+    this.logTimings("full")
     await this.finishState()
   }
 
   private async indexIncremental() {
+    this.timings = emptyTimings()
     this.resetState("discovering")
     await this.emitState()
+    const t0 = Date.now()
     const files = await discoverFiles(this.rootDirectory, this.config)
     const existing = await this.qdrant.getFileHashes()
+    this.timings.discovery = Date.now() - t0
     this.state.totalFiles = files.length
     this.state.status = "indexing"
     await this.emitState()
@@ -193,6 +219,7 @@ export class Indexer {
 
     const removed = [...existing.keys()].filter((filePath) => !seen.has(filePath))
     await this.qdrant.deleteByFilePaths(removed)
+    this.logTimings("incremental")
     await this.finishState()
   }
 
@@ -254,6 +281,7 @@ export class Indexer {
     const batch = this.batchQueue.splice(0)
     if (batch.length === 0) return
 
+    const tChunk = Date.now()
     const allChunks: Array<{ chunk: Chunk; snapshot: FileSnapshot }> = []
     for (const { snapshot } of batch) {
       const chunks = [
@@ -269,6 +297,7 @@ export class Indexer {
         allChunks.push({ chunk, snapshot })
       }
     }
+    this.timings.chunking += Date.now() - tChunk
 
     if (allChunks.length === 0) {
       for (const item of batch) item.resolve()
@@ -276,7 +305,10 @@ export class Indexer {
     }
 
     try {
+      const tEmbed = Date.now()
       const vectors = await this.embeddings.embed(allChunks.map(({ chunk }) => chunk.content))
+      this.timings.embedding += Date.now() - tEmbed
+
       const points: IndexedPoint[] = allChunks.map(({ chunk, snapshot }, index) => ({
         id: uuidv4(),
         vector: vectors[index],
@@ -291,7 +323,13 @@ export class Indexer {
           indexed_at: Date.now(),
         },
       }))
+
+      const tUpsert = Date.now()
       await this.qdrant.upsertPoints(points)
+      this.timings.upsert += Date.now() - tUpsert
+
+      this.timings.totalChunks += allChunks.length
+      this.timings.batches += 1
       this.state.totalChunks += points.length
     } catch (error) {
       for (const { snapshot } of batch) {
@@ -314,5 +352,17 @@ export class Indexer {
     if (this.currentAbort?.signal.aborted) {
       throw new Error("Indexing aborted")
     }
+  }
+
+  private logTimings(mode: string) {
+    const t = this.timings
+    console.error(
+      `[opencode-qdrant] ${mode} reindex timings:`,
+      `discovery=${t.discovery}ms`,
+      `chunking=${t.chunking}ms`,
+      `embedding=${t.embedding}ms (${t.totalChunks} chunks in ${t.batches} batches, avg=${Math.round(t.embedding / Math.max(t.batches, 1))}ms/batch)`,
+      `upsert=${t.upsert}ms`,
+      `total=${t.discovery + t.chunking + t.embedding + t.upsert}ms`,
+    )
   }
 }
