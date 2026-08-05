@@ -114,35 +114,42 @@ export class QdrantWrapper {
     })
   }
 
-  async getFileHashes() {
-    await this.ensureCollection()
-    const hashes = new Map<string, string>()
-    let offset: string | number | undefined
+/**
+ * Build a `file_path → content_hash` map of currently indexed files.
+ *
+ * Scrolls the whole collection (no chunk_type filter) so the result is
+ * robust to files that lack a `summary` chunk — every file with at
+ * least one chunk is included. When a file has multiple chunks, all
+ * chunks of a given file share the same `content_hash` (it's the hash
+ * of the whole file, set in indexSnapshot), so any chunk's hash is
+ * authoritative.
+ */
+async getFileHashes() {
+  await this.ensureCollection()
+  const hashes = new Map<string, string>()
+  let offset: string | number | undefined
 
-    do {
-      const page = await this.client.scroll(this.collectionName, {
-        limit: 256,
-        offset,
-        with_payload: true,
-        with_vector: false,
-        filter: {
-          must: [{ key: "chunk_type", match: { value: "summary" } }],
-        },
-      })
+  do {
+    const page = await this.client.scroll(this.collectionName, {
+      limit: 256,
+      offset,
+      with_payload: true,
+      with_vector: false,
+    })
 
-      for (const point of page.points) {
-        const payload = point.payload as PointPayload | null
-        if (payload) {
-          hashes.set(payload.file_path, payload.content_hash)
-        }
+    for (const point of page.points) {
+      const payload = point.payload as PointPayload | null
+      if (payload?.file_path && !hashes.has(payload.file_path)) {
+        hashes.set(payload.file_path, payload.content_hash)
       }
-      const nextOffset = page.next_page_offset
-      offset = typeof nextOffset === "string" || typeof nextOffset === "number" ? nextOffset : undefined
-    } while (offset !== undefined)
+    }
+    const nextOffset = page.next_page_offset
+    offset = typeof nextOffset === "string" || typeof nextOffset === "number" ? nextOffset : undefined
+  } while (offset !== undefined)
 
-    this.healthy = true
-    return hashes
-  }
+  this.healthy = true
+  return hashes
+}
 
   async deleteByFilePaths(filePaths: string[]) {
     if (filePaths.length === 0) {
