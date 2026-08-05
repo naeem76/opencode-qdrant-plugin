@@ -192,7 +192,7 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            await this.queueForBatch(snapshot);
+            this.queueForBatch(snapshot);
             this.state.processedFiles += 1;
             await this.emitState();
         });
@@ -227,7 +227,7 @@ export class Indexer {
                 await this.emitState();
                 return;
             }
-            await this.queueForBatch(snapshot);
+            this.queueForBatch(snapshot);
             await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash);
             this.state.processedFiles += 1;
             await this.emitState();
@@ -266,20 +266,21 @@ export class Indexer {
         };
     }
     /**
-       * Queue a snapshot for batched embedding + upsert. Returns a promise that
-       * resolves once the batch containing this snapshot has been flushed. When
-       * the queue reaches `concurrency` items, a flush is triggered immediately
-       * so embeddings run while other files are still being read.
+       * Queue a snapshot for batched embedding + upsert. Does NOT block —
+       * the caller continues and the batch is flushed later either when
+       * the queue fills (concurrency items) or by the final flushBatch()
+       * after the file loop. Blocking here would deadlock when fewer than
+       * `concurrency` files need embedding (they'd wait for a flush that
+       * can't trigger because the queue never fills and the loop can't
+       * reach the final flush).
        */
-    async queueForBatch(snapshot) {
-        return new Promise((resolve) => {
-            this.batchQueue.push({ snapshot, resolve });
-            if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
-                this.batchFlush = this.flushBatch().finally(() => {
-                    this.batchFlush = null;
-                });
-            }
-        });
+    queueForBatch(snapshot) {
+        this.batchQueue.push({ snapshot });
+        if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
+            this.batchFlush = this.flushBatch().finally(() => {
+                this.batchFlush = null;
+            });
+        }
     }
     /**
      * Flush all queued snapshots: chunk every file, embed all chunks in a
@@ -288,6 +289,10 @@ export class Indexer {
      * more efficiently than per-file requests.
      */
     async flushBatch() {
+        // Wait for any in-flight flush to complete before draining the queue.
+        if (this.batchFlush) {
+            await this.batchFlush;
+        }
         const batch = this.batchQueue.splice(0);
         if (batch.length === 0)
             return;
@@ -304,8 +309,6 @@ export class Indexer {
         }
         this.timings.chunking += Date.now() - tChunk;
         if (allChunks.length === 0) {
-            for (const item of batch)
-                item.resolve();
             return;
         }
         try {
@@ -338,8 +341,6 @@ export class Indexer {
                 this.recordError(snapshot.relativePath, error);
             }
         }
-        for (const item of batch)
-            item.resolve();
     }
     async finishState() {
         const info = await this.qdrant.getCollectionInfo();

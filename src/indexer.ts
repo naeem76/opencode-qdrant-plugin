@@ -37,7 +37,6 @@ const emptyTimings = (): RunTimings => ({
 
 interface QueuedSnapshot {
   snapshot: FileSnapshot
-  resolve: () => void
 }
 
 export class Indexer {
@@ -220,7 +219,7 @@ export class Indexer {
         await this.emitState()
         return
       }
-      await this.queueForBatch(snapshot)
+      this.queueForBatch(snapshot)
       this.state.processedFiles += 1
       await this.emitState()
     })
@@ -258,7 +257,7 @@ export class Indexer {
         return
       }
 
-      await this.queueForBatch(snapshot)
+      this.queueForBatch(snapshot)
       await this.qdrant.deleteStaleFileVersion(snapshot.relativePath, snapshot.hash)
       this.state.processedFiles += 1
       await this.emitState()
@@ -303,20 +302,21 @@ export class Indexer {
   }
 
 /**
-   * Queue a snapshot for batched embedding + upsert. Returns a promise that
-   * resolves once the batch containing this snapshot has been flushed. When
-   * the queue reaches `concurrency` items, a flush is triggered immediately
-   * so embeddings run while other files are still being read.
+   * Queue a snapshot for batched embedding + upsert. Does NOT block —
+   * the caller continues and the batch is flushed later either when
+   * the queue fills (concurrency items) or by the final flushBatch()
+   * after the file loop. Blocking here would deadlock when fewer than
+   * `concurrency` files need embedding (they'd wait for a flush that
+   * can't trigger because the queue never fills and the loop can't
+   * reach the final flush).
    */
-  private async queueForBatch(snapshot: FileSnapshot): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.batchQueue.push({ snapshot, resolve })
-      if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
-        this.batchFlush = this.flushBatch().finally(() => {
-          this.batchFlush = null
-        })
-      }
-    })
+  private queueForBatch(snapshot: FileSnapshot): void {
+    this.batchQueue.push({ snapshot })
+    if (this.batchQueue.length >= this.config.concurrency && !this.batchFlush) {
+      this.batchFlush = this.flushBatch().finally(() => {
+        this.batchFlush = null
+      })
+    }
   }
 
   /**
@@ -326,6 +326,10 @@ export class Indexer {
    * more efficiently than per-file requests.
    */
   private async flushBatch(): Promise<void> {
+    // Wait for any in-flight flush to complete before draining the queue.
+    if (this.batchFlush) {
+      await this.batchFlush
+    }
     const batch = this.batchQueue.splice(0)
     if (batch.length === 0) return
 
@@ -348,7 +352,6 @@ export class Indexer {
     this.timings.chunking += Date.now() - tChunk
 
     if (allChunks.length === 0) {
-      for (const item of batch) item.resolve()
       return
     }
 
@@ -384,8 +387,6 @@ export class Indexer {
         this.recordError(snapshot.relativePath, error)
       }
     }
-
-    for (const item of batch) item.resolve()
   }
 
   private async finishState() {
