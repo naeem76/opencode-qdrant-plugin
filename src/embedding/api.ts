@@ -7,6 +7,9 @@ type ApiEmbeddingOptions = {
   dimensions: number
 }
 
+/** Max texts per embedding request — keeps requests under provider token limits. */
+const API_BATCH_SIZE = 100
+
 export class ApiEmbeddingProvider implements EmbeddingProvider {
   readonly name: string
   readonly dimensions: number
@@ -21,25 +24,34 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
       return []
     }
 
-    const response = await fetch(new URL("/embeddings", this.options.apiUrl), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.options.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.options.model,
-        input: texts,
-        dimensions: this.options.dimensions,
-      }),
-    })
+    const vectors: number[][] = []
+    for (let index = 0; index < texts.length; index += API_BATCH_SIZE) {
+      const batch = texts.slice(index, index + API_BATCH_SIZE)
+      const response = await fetch(new URL("/embeddings", this.options.apiUrl), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.options.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.options.model,
+          input: batch,
+          dimensions: this.options.dimensions,
+        }),
+      })
 
-    if (!response.ok) {
-      throw new Error(`Embedding API failed with ${response.status}`)
+      if (!response.ok) {
+        throw new Error(`Embedding API failed with ${response.status}`)
+      }
+
+      const json = (await response.json()) as { data?: Array<{ embedding: number[] }> }
+      const batchVectors = json.data?.map((item) => item.embedding) ?? []
+      if (batchVectors.length !== batch.length) {
+        throw new Error("Embedding API returned an unexpected number of vectors")
+      }
+      vectors.push(...batchVectors)
     }
 
-    const json = (await response.json()) as { data?: Array<{ embedding: number[] }> }
-    const vectors = json.data?.map((item) => item.embedding) ?? []
     if (vectors.length !== texts.length) {
       throw new Error("Embedding API returned an unexpected number of vectors")
     }
