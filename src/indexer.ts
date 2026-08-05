@@ -216,10 +216,15 @@ export class Indexer {
 
   private async indexSnapshot(snapshot: FileSnapshot) {
     try {
-      const chunks = [
-        extractFileSummary(snapshot.content),
-        ...chunkFile(snapshot.content, this.config.chunkMaxLines, this.config.chunkOverlapLines),
-      ]
+const chunks = [
+      extractFileSummary(snapshot.content),
+      ...chunkFile(
+        snapshot.content,
+        this.config.chunkMaxLines,
+        this.config.chunkOverlapLines,
+        snapshot.language,
+      ),
+    ]
       const vectors = await this.embeddings.embed(chunks.map((chunk) => chunk.content))
       const points: IndexedPoint[] = chunks.map((chunk, index) => ({
         id: uuidv4(),

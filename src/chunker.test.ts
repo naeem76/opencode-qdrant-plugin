@@ -334,3 +334,235 @@ describe("chunkFile — edge cases", () => {
     }
   })
 })
+
+describe("chunkFile — language-aware boundaries", () => {
+  // Bodies must exceed 5 lines to avoid being merged into the previous chunk.
+  const body = (n: number) => Array.from({ length: n }, (_, i) => `  x = ${i}`).join("\n")
+
+  test("Python: splits at def / class / async def / decorated functions", () => {
+    const content = [
+      "import os",
+      body(8),
+      "def helper():",
+      body(8),
+      "@decorator",
+      "def decorated():",
+      body(8),
+      "class App:",
+      body(8),
+      "async def fetch():",
+      body(8),
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "python")
+    expect(chunks.length).toBeGreaterThanOrEqual(4)
+    expect(chunks.some((c) => c.content.includes("def helper"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("def decorated"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("class App"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("async def fetch"))).toBe(true)
+  })
+
+  test("Go: splits at func / type declarations", () => {
+    const content = [
+      "package main",
+      body(8),
+      "func main() {",
+      body(8),
+      "}",
+      "func (s *Server) Start() {",
+      body(8),
+      "}",
+      "type Handler struct {",
+      body(8),
+      "}",
+      "type Reader interface {",
+      body(8),
+      "}",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "go")
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+    expect(chunks.some((c) => c.content.includes("func main"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("Start()"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("type Handler struct"))).toBe(true)
+  })
+
+  test("Rust: splits at fn / struct / enum / impl / trait / mod", () => {
+    const content = [
+      "use std::io;",
+      body(8),
+      "pub fn run() {",
+      body(8),
+      "}",
+      "pub async fn fetch() {",
+      body(8),
+      "}",
+      "pub struct Config {",
+      body(8),
+      "}",
+      "pub enum Mode {",
+      body(8),
+      "}",
+      "pub trait Storage {",
+      body(8),
+      "}",
+      "impl Storage for File {",
+      body(8),
+      "}",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "rust")
+    expect(chunks.length).toBeGreaterThanOrEqual(5)
+    expect(chunks.some((c) => c.content.includes("fn run"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("struct Config"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("enum Mode"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("trait Storage"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("impl Storage"))).toBe(true)
+  })
+
+  test("Java: splits at class / method declarations", () => {
+    const content = [
+      "package com.example;",
+      "public class App {",
+      body(8),
+      "public void run() {",
+      body(8),
+      "}",
+      "private static int compute() {",
+      body(8),
+      "}",
+      "}",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "java")
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    expect(chunks.some((c) => c.content.includes("public void run"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("compute()"))).toBe(true)
+  })
+
+  test("Ruby: splits at def / class / module / visibility", () => {
+    const content = [
+      body(8),
+      "def helper",
+      body(8),
+      "end",
+      "class App",
+      body(8),
+      "end",
+      "module Mod",
+      body(8),
+      "end",
+      "private",
+      "def secret",
+      body(8),
+      "end",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "ruby")
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+    expect(chunks.some((c) => c.content.includes("def helper"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("class App"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("module Mod"))).toBe(true)
+  })
+
+  test("PHP: splits at function / class / interface / trait", () => {
+    const content = [
+      "<?php",
+      body(8),
+      "function helper() {",
+      body(8),
+      "}",
+      "class App {",
+      body(8),
+      "public function run() {",
+      body(8),
+      "}",
+      "}",
+      "interface IApp {",
+      body(8),
+      "}",
+      "trait TApp {",
+      body(8),
+      "}",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "php")
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+    expect(chunks.some((c) => c.content.includes("function helper"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("class App"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("interface IApp"))).toBe(true)
+  })
+
+  test("C#: splits at class / interface / struct / method", () => {
+    const content = [
+      "namespace App;",
+      "public class Program {",
+      body(8),
+      "public void Run() {",
+      body(8),
+      "}",
+      "}",
+      "public interface IApp {",
+      body(8),
+      "}",
+      "public struct Point {",
+      body(8),
+      "}",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "csharp")
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+    expect(chunks.some((c) => c.content.includes("class Program"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("interface IApp"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("struct Point"))).toBe(true)
+  })
+
+  test("C: splits at functions / structs / #define", () => {
+    const content = [
+      "#include <stdio.h>",
+      body(8),
+      "#define MAX 100",
+      body(8),
+      "int main() {",
+      body(8),
+      "}",
+      "struct Point {",
+      body(8),
+      "};",
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "c")
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    expect(chunks.some((c) => c.content.includes("int main"))).toBe(true)
+    expect(chunks.some((c) => c.content.includes("struct Point"))).toBe(true)
+  })
+
+  test("SQL: splits at major statements", () => {
+    const content = [
+      body(8),
+      "CREATE TABLE users (id INT);",
+      body(8),
+      "CREATE INDEX idx ON users(id);",
+      body(8),
+      "SELECT * FROM users;",
+      body(8),
+    ].join("\n")
+    const chunks = chunkFile(content, 80, 0, "sql")
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("Markdown: splits at any header level (h1..h6)", () => {
+    const body = Array.from({ length: 8 }, (_, i) => `line${i}`).join("\n")
+    const content = ["# Title", body, "## Section", body, "### Sub", body, "#### Deep", body].join("\n")
+    const chunks = chunkFile(content, 80, 0, "markdown")
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+  })
+
+  test("unknown language falls back to generic patterns", () => {
+    const body = Array.from({ length: 8 }, () => "  x = 1").join("\n")
+    const content = ["function a() {", body, "}", "function b() {", body, "}"].join("\n")
+    const chunks = chunkFile(content, 80, 0, "text")
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("no language hint uses only generic patterns (backwards compatible)", () => {
+    const body = Array.from({ length: 8 }, () => "  return 1").join("\n")
+    const content = ["def helper():", body, "def other():", body].join("\n")
+    // Without a python hint, 'def' is not recognized as a boundary.
+    const chunksNoHint = chunkFile(content, 80, 0)
+    const chunksPython = chunkFile(content, 80, 0, "python")
+    expect(chunksPython.length).toBeGreaterThan(chunksNoHint.length)
+  })
+})

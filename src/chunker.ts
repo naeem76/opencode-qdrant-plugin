@@ -9,6 +9,67 @@ const BOUNDARY_PATTERNS = [
 ]
 
 /**
+ * Per-language boundary regexes. Applied in addition to the generic
+ * BOUNDARY_PATTERNS when a language hint is supplied to chunkFile.
+ *
+ * Each pattern marks the start of a new logical chunk — typically the
+ * first line of a function/class/method/section declaration.
+ */
+const LANGUAGE_BOUNDARIES: Record<string, RegExp[]> = {
+  python: [
+    /^\s*(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*/,
+    /^\s*class\s+[A-Za-z_][A-Za-z0-9_]*/,
+    /^\s*@\w+/,
+  ],
+  go: [
+    /^\s*func\s+(?:\([^)]*\)\s+)?[A-Za-z0-9_]+\s*\(/,
+    /^\s*type\s+[A-Za-z0-9_]+\s+(?:struct|interface|func)/,
+  ],
+  rust: [
+    /^\s*(?:pub\s+)?(?:async\s+)?fn\s+[A-Za-z0-9_]+/,
+    /^\s*(?:pub\s+)?struct\s+[A-Za-z0-9_]+/,
+    /^\s*(?:pub\s+)?enum\s+[A-Za-z0-9_]+/,
+    /^\s*(?:pub\s+)?(?:trait|impl|mod)\s+/,
+    /^\s*macro_rules!\s+/,
+  ],
+  java: [
+    /^\s*(?:public|private|protected|static|final|\s)*\s*(?:class|interface|enum|record)\s+/,
+    /^\s*(?:public|private|protected|static|final|synchronized|\s)*\s*(?:[A-Za-z_][\w.<>\[\],?\s]*)\s+[A-Za-z_]\w*\s*\(/,
+  ],
+  kotlin: [
+    /^\s*(?:public|private|protected|internal|open|sealed|data|\s)*\s*fun\s+/,
+    /^\s*(?:public|private|protected|internal|\s)*\s*(?:class|object|interface|enum class)\s+/,
+  ],
+  ruby: [
+    /^\s*(?:def|class|module)\s+/,
+    /^\s*(?:public|private|protected)\s+$/,
+  ],
+  php: [
+    /^\s*(?:public|private|protected|static|\s)*\s*function\s+/,
+    /^\s*(?:abstract\s+|final\s+)?class\s+/,
+    /^\s*interface\s+/,
+    /^\s*trait\s+/,
+  ],
+  csharp: [
+    /^\s*(?:public|private|protected|internal|static|sealed|abstract|\s)*\s*(?:class|interface|struct|enum|record)\s+/,
+    /^\s*(?:public|private|protected|internal|static|virtual|override|async|\s)*\s+[A-Za-z_]\w*\s*\(/,
+  ],
+  cpp: [
+    /^\s*(?:template\s*<[^>]*>\s*)?(?:inline\s+|constexpr\s+|static\s+)?[A-Za-z_][\w:&*<>\[\]\s]*\s+[A-Za-z_]\w*\s*\(/,
+    /^\s*(?:class|struct|enum class|enum)\s+/,
+    /^\s*namespace\s+/,
+  ],
+  c: [
+    /^\s*(?:static\s+|inline\s+)?[A-Za-z_][\w:*&<>\[\]\s]*\s+[A-Za-z_]\w*\s*\(/,
+    /^\s*(?:struct|enum|union)\s+/,
+    /^\s*#\s*define\s+/,
+  ],
+  sql: [/^\s*(?:CREATE|ALTER|DROP|SELECT|INSERT|UPDATE|DELETE|WITH)\b/i],
+  shell: [/^\s*(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)\s*\{/],
+  markdown: [/^#{1,6}\s/],
+}
+
+/**
  * Signature patterns used to build a structured file summary.
  *
  * Each entry: [regex, kind]. Captured group 1 is the symbol name.
@@ -222,9 +283,16 @@ function extractSignatures(lines: string[]): Signature[] {
   return sigs
 }
 
-export function chunkFile(content: string, maxLines: number, overlapLines: number): Chunk[] {
+export function chunkFile(
+  content: string,
+  maxLines: number,
+  overlapLines: number,
+  language?: string,
+): Chunk[] {
   const lines = content.split(/\r?\n/)
   const starts = new Set<number>([0])
+  const langBoundaries = language ? LANGUAGE_BOUNDARIES[language] : undefined
+  const allPatterns = langBoundaries ? [...BOUNDARY_PATTERNS, ...langBoundaries] : BOUNDARY_PATTERNS
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim()
@@ -235,7 +303,7 @@ export function chunkFile(content: string, maxLines: number, overlapLines: numbe
       continue
     }
 
-    if (BOUNDARY_PATTERNS.some((pattern) => pattern.test(line))) {
+    if (allPatterns.some((pattern) => pattern.test(line))) {
       starts.add(index)
     }
   }

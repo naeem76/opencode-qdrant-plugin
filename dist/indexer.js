@@ -196,7 +196,7 @@ export class Indexer {
         try {
             const chunks = [
                 extractFileSummary(snapshot.content),
-                ...chunkFile(snapshot.content, this.config.chunkMaxLines, this.config.chunkOverlapLines),
+                ...chunkFile(snapshot.content, this.config.chunkMaxLines, this.config.chunkOverlapLines, snapshot.language),
             ];
             const vectors = await this.embeddings.embed(chunks.map((chunk) => chunk.content));
             const points = chunks.map((chunk, index) => ({
