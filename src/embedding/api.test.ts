@@ -51,6 +51,38 @@ describe("ApiEmbeddingProvider", () => {
     expect(await provider.embed(["text"])).toHaveLength(1)
   })
 
+  test("includes API error body and splits oversized 400 batches", async () => {
+    let calls = 0
+    const provider = new ApiEmbeddingProvider({
+      apiUrl: "https://example.com/v1",
+      apiKey: "key",
+      model: "model",
+      dimensions: 2,
+      provider: "openrouter",
+      sendDimensions: false,
+      scheduler: { batchSize: 2 },
+      fetchFn: async (_url, init) => {
+        calls += 1
+        const body = JSON.parse(String(init?.body)) as { input: string | string[] }
+        const count = Array.isArray(body.input) ? body.input.length : 1
+        if (count > 1) {
+          return new Response(JSON.stringify({ error: { message: "too many inputs" } }), {
+            status: 400,
+          })
+        }
+        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), {
+          status: 200,
+        })
+      },
+    })
+
+    expect(await provider.embed(["one", "two"])).toEqual([
+      [0.1, 0.2],
+      [0.1, 0.2],
+    ])
+    expect(calls).toBeGreaterThan(2)
+  })
+
   test("rejects wrong-size or non-finite vectors", async () => {
     const provider = new ApiEmbeddingProvider({
       apiUrl: "https://example.com/v1",

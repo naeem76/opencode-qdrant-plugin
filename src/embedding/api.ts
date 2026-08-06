@@ -25,8 +25,11 @@ type ApiEmbeddingOptions = {
 }
 
 /** Max texts per embedding request — keeps requests under provider token limits. */
-const API_BATCH_SIZE = 100
+const API_BATCH_SIZE = 32
+const OPENROUTER_BATCH_SIZE = 16
 const OPENROUTER_FREE_REQUEST_INTERVAL_MS = 3000
+/** Soft char cap per input; oversized chunks are truncated to avoid provider 400s. */
+const MAX_INPUT_CHARS = 8_000
 
 type RequestJob = {
   texts: string[]
@@ -57,7 +60,11 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
     this.dimensions = options.dimensions
     const isOpenRouterFree =
       options.provider === "openrouter" && options.model.endsWith(":free")
-    this.batchSize = Math.max(1, options.scheduler?.batchSize ?? API_BATCH_SIZE)
+    this.batchSize = Math.max(
+      1,
+      options.scheduler?.batchSize ??
+        (options.provider === "openrouter" ? OPENROUTER_BATCH_SIZE : API_BATCH_SIZE),
+    )
     this.maxConcurrency = Math.max(
       1,
       options.scheduler?.maxConcurrency ??
@@ -79,12 +86,13 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
       return []
     }
 
+    const sanitized = texts.map((text) => sanitizeEmbeddingInput(text))
     const group: RequestGroup = { cancelled: false }
     const requests: Array<Promise<number[][]>> = []
-    const prioritized = texts.length === 1
-    for (let index = 0; index < texts.length; index += this.batchSize) {
+    const prioritized = sanitized.length === 1
+    for (let index = 0; index < sanitized.length; index += this.batchSize) {
       requests.push(
-        this.enqueue(texts.slice(index, index + this.batchSize), group, prioritized),
+        this.enqueue(sanitized.slice(index, index + this.batchSize), group, prioritized),
       )
     }
     let vectors: number[][]
@@ -157,6 +165,25 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
   }
 
   private async requestBatch(batch: string[]): Promise<number[][]> {
+    try {
+      return await this.requestBatchOnce(batch)
+    } catch (error) {
+      // Oversized/invalid multi-input batches often return 400; split and retry.
+      if (
+        batch.length > 1 &&
+        error instanceof Error &&
+        /\b400\b/.test(error.message)
+      ) {
+        const mid = Math.ceil(batch.length / 2)
+        const left = await this.requestBatch(batch.slice(0, mid))
+        const right = await this.requestBatch(batch.slice(mid))
+        return [...left, ...right]
+      }
+      throw error
+    }
+  }
+
+  private async requestBatchOnce(batch: string[]): Promise<number[][]> {
     return retryAsync(
       async () => {
         const endpoint = `${this.options.apiUrl.replace(/\/+$/, "")}/embeddings`
@@ -169,19 +196,22 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
           },
           body: JSON.stringify({
             model: this.options.model,
-            input: batch,
+            input: batch.length === 1 ? batch[0] : batch,
             ...(this.options.sendDimensions ? { dimensions: this.options.dimensions } : {}),
             ...this.options.extraBody,
           }),
         })
 
         if (!response.ok) {
+          const body = (await response.text()).slice(0, 500)
           if (isRetryableHttpStatus(response.status)) {
             const retryAfterMs = this.retryDelay(response)
             if (response.status === 429) this.recordThrottle(retryAfterMs)
             throw new HttpRetryableError(response.status, retryAfterMs)
           }
-          throw new Error(`Embedding API failed with ${response.status}`)
+          throw new Error(
+            `Embedding API failed with ${response.status}${body ? `: ${body}` : ""}`,
+          )
         }
 
         const json = (await response.json()) as {
@@ -245,4 +275,11 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
     }
     return response.status === 429 ? 1000 : undefined
   }
+}
+
+export function sanitizeEmbeddingInput(text: string): string {
+  const normalized = text.replace(/\u0000/g, " ").trim()
+  if (!normalized) return "."
+  if (normalized.length <= MAX_INPUT_CHARS) return normalized
+  return normalized.slice(0, MAX_INPUT_CHARS)
 }

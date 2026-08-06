@@ -221,6 +221,12 @@ opencode.json ──> server plugin ──> Qdrant (vector DB)
 
 tui.json ──> TUI plugin
                ├── reads <userDataDir>/projects/<key>/status.json (polls 2s)
+
+Warn/error events are also appended to the global log:
+
+`<userDataDir>/errors-opencode-qdrant.log`
+
+On Windows that is typically `%LOCALAPPDATA%\opencode-qdrant\errors-opencode-qdrant.log`.
                ├── sidebar_content slot (status view)
                ├── Ctrl+P commands
                └── writes <userDataDir>/projects/<key>/trigger.json

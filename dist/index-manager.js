@@ -271,7 +271,7 @@ export class IndexManager {
                 return;
             }
             if (this.staging.indexer.getState().status !== "complete") {
-                throw new Error("Staging index completed with errors");
+                throw new Error(this.formatStagingFailure("Staging index completed with errors"));
             }
             this.deployment.phase = "verifying";
             await this.emitState();
@@ -281,7 +281,7 @@ export class IndexManager {
                 return;
             }
             if (this.staging.indexer.getState().status !== "complete") {
-                throw new Error("Final staging reconciliation completed with errors");
+                throw new Error(this.formatStagingFailure("Final staging reconciliation completed with errors"));
             }
             const info = await this.staging.qdrant.getCollectionInfo();
             if (!info.healthy || info.pointsCount === null) {
@@ -380,8 +380,13 @@ export class IndexManager {
             this.state = this.decorate(previous.indexer.getState());
             this.state.status = rateLimited ? "rate_limited" : "error";
             await this.emitState();
+            const stagingState = failedRuntime?.indexer.getState();
             await this.log("error", "Embedding provider switch failed", {
                 error: this.deployment.lastError,
+                targetModel: generation.profile.model,
+                targetProvider: generation.profile.provider,
+                errorCount: stagingState?.errorCount ?? 0,
+                errors: stagingState?.errors ?? [],
             });
             this.staging = null;
             try {
@@ -405,6 +410,16 @@ export class IndexManager {
     }
     isSwitchSuperseded(token) {
         return this.cancelSwitch || token !== this.switchGeneration || this.queuedSwitch !== null;
+    }
+    formatStagingFailure(prefix) {
+        const state = this.staging?.indexer.getState();
+        const samples = (state?.errors ?? [])
+            .slice(0, 3)
+            .map((item) => `${item.file}: ${item.error}`);
+        if (!samples.length) {
+            return `${prefix} (${state?.errorCount ?? 0} file error(s); no details retained)`;
+        }
+        return `${prefix} (${state?.errorCount ?? samples.length}): ${samples.join(" | ")}`;
     }
     async abortStaging(active, reason, message) {
         const failedRuntime = this.staging;
@@ -630,11 +645,9 @@ export class IndexManager {
         };
     }
     decorate(state) {
-        const status = this.deployment.phase === "switching"
-            ? "switching"
-            : this.deployment.phase === "failed" && state.status !== "rate_limited"
-                ? "error"
-                : state.status;
+        // A failed background switch must not paint the still-healthy active index
+        // as errored (that produced confusing "0 error(s)" while search still worked).
+        const status = this.deployment.phase === "switching" ? "switching" : state.status;
         return { ...state, status, deployment: structuredClone(this.deployment) };
     }
     async emitState() {

@@ -1,5 +1,6 @@
 import { resolveConfig } from "./config.js";
 import { readEmbeddingSettings } from "./embedding-settings.js";
+import { appendErrorLog } from "./error-log.js";
 import { IndexManager } from "./index-manager.js";
 import { readStoredOpenRouterApiKey } from "./opencode-auth.js";
 import { embeddingProfileFromConfig } from "./profiles.js";
@@ -33,14 +34,28 @@ const server = async (input, rawOptions) => {
     };
     let lastToastStatus = null;
     const log = async (level, message, extra) => {
-        await input.client.app.log({
-            body: {
-                service: "opencode-qdrant",
+        try {
+            await input.client.app.log({
+                body: {
+                    service: "opencode-qdrant",
+                    level,
+                    message,
+                    extra,
+                },
+            });
+        }
+        catch {
+            // OpenCode logging may be unavailable during teardown.
+        }
+        if (level === "warn" || level === "error") {
+            await appendErrorLog({
                 level,
+                source: "opencode-qdrant",
                 message,
-                extra,
-            },
-        });
+                projectDirectory: input.directory,
+                details: extra,
+            }).catch(() => { });
+        }
     };
     const persisted = await readStatusFile(input.directory);
     const manager = new IndexManager(input.directory, options, desiredProfile, persisted, async (state) => {

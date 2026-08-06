@@ -69,14 +69,14 @@ function makeMockClient() {
       }
       return { operation_id: 0 }
     },
-    async search(name: string, body: { vector: number[]; limit: number; score_threshold: number; with_payload: boolean; filter?: unknown }) {
-      calls.push({ method: "search", args: [name, body.limit] })
+    async query(name: string, body: { query: number[]; limit: number; score_threshold: number; with_payload: boolean; filter?: unknown }) {
+      calls.push({ method: "query", args: [name, body.limit] })
       const all = [...points.values()].map((p) => ({
         id: p.id,
         score: 0.9,
         payload: p.payload,
       }))
-      return all.slice(0, body.limit)
+      return { points: all.slice(0, body.limit) }
     },
     async scroll(name: string, body: { limit: number; offset?: string | number; with_payload: boolean; with_vector: boolean; filter?: unknown }) {
       calls.push({ method: "scroll", args: [name, body.limit] })

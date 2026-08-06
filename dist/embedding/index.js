@@ -15,14 +15,19 @@ export function createEmbeddingProvider(config) {
             headers: config.embeddingProvider === "openrouter"
                 ? {
                     "HTTP-Referer": "https://github.com/naeem76/opencode-qdrant-plugin",
-                    "X-OpenRouter-Title": "OpenCode Qdrant",
+                    "X-Title": "OpenCode Qdrant",
+                    // Cache identical embedding requests at OpenRouter (zero cost on hit).
+                    "X-OpenRouter-Cache": "true",
                 }
                 : undefined,
-            extraBody: config.embeddingProvider === "openrouter"
+            extraBody: config.embeddingProvider === "openrouter" &&
+                (config.openrouterDataCollection === "deny" || config.openrouterZdr)
                 ? {
                     provider: {
-                        data_collection: config.openrouterDataCollection,
-                        zdr: config.openrouterZdr,
+                        ...(config.openrouterDataCollection === "deny"
+                            ? { data_collection: "deny" }
+                            : {}),
+                        ...(config.openrouterZdr ? { zdr: true } : {}),
                     },
                 }
                 : undefined,

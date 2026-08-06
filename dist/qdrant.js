@@ -98,8 +98,8 @@ export class QdrantWrapper {
     }
     async search(vector, options) {
         await this.ensureCollection();
-        const result = await retryAsync(() => this.client.search(this.collectionName, {
-            vector,
+        const result = await retryAsync(() => this.client.query(this.collectionName, {
+            query: vector,
             limit: Math.max(options.limit, 1),
             score_threshold: options.scoreThreshold,
             with_payload: true,
@@ -110,9 +110,9 @@ export class QdrantWrapper {
                 : undefined,
         }), (err) => isTransientNetworkError(err));
         this.healthy = true;
-        return result.flatMap((item) => {
+        return (result.points ?? []).flatMap((item) => {
             const payload = item.payload;
-            if (!payload) {
+            if (!payload || item.score === null || item.score === undefined) {
                 return [];
             }
             return [{ id: item.id, score: item.score, payload }];

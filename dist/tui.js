@@ -300,57 +300,93 @@ function StatusView(props) {
                 return theme().textMuted;
         }
     };
+    const activeTier = () => {
+        const profile = status()?.deployment?.active?.profile;
+        if (!profile)
+            return null;
+        if (profile.tier === "local" || profile.provider === "local")
+            return "Local";
+        if (profile.tier === "free")
+            return "OpenRouter free";
+        if (profile.tier === "paid")
+            return "OpenRouter paid";
+        if (profile.provider === "openrouter")
+            return "OpenRouter";
+        if (profile.provider === "api")
+            return "API";
+        return profile.provider;
+    };
+    const activeModel = () => {
+        const profile = status()?.deployment?.active?.profile;
+        if (!profile)
+            return status()?.provider ?? null;
+        return `${profile.model} (${profile.dimensions}d)`;
+    };
     const label = () => {
         const s = status();
         if (!s)
             return "Not connected";
-        if (s.deployment?.staging && s.deployment.phase !== "failed") {
+        const tier = activeTier();
+        if (s.deployment?.phase === "failed") {
+            return tier ? `${tier} · Switch failed` : "Switch failed";
+        }
+        if (s.deployment?.staging) {
             return `Building ${s.processedFiles}/${s.totalFiles}...`;
         }
         switch (s.status) {
             case "idle":
-                return "Idle";
+                return tier ? `${tier} · Idle` : "Idle";
             case "discovering":
-                return "Discovering files...";
+                return tier ? `${tier} · Discovering...` : "Discovering files...";
             case "indexing":
-                return `Indexing ${s.processedFiles}/${s.totalFiles}...`;
+                return tier
+                    ? `${tier} · Indexing ${s.processedFiles}/${s.totalFiles}`
+                    : `Indexing ${s.processedFiles}/${s.totalFiles}...`;
             case "complete":
-                return `${s.collectionPointCount ?? 0} chunks indexed`;
+                return tier
+                    ? `${tier} · ${s.collectionPointCount ?? 0} chunks`
+                    : `${s.collectionPointCount ?? 0} chunks indexed`;
             case "error":
-                return `${s.errorCount} error(s)`;
+                return tier ? `${tier} · ${s.errorCount} error(s)` : `${s.errorCount} error(s)`;
             case "unavailable":
                 return "Qdrant unavailable";
             case "switching":
-                return "Switching active index...";
+                return tier ? `${tier} · Switching...` : "Switching active index...";
             case "rate_limited":
                 return "Cloud rate limited";
         }
     };
     const detail = () => {
         const s = status();
-        if (!s || s.status === "idle" || s.status === "unavailable")
+        if (!s || s.status === "unavailable")
             return null;
+        const model = activeModel();
         if (s.deployment?.phase === "failed") {
             return [
-                s.deployment.active
-                    ? `Search: ${s.deployment.active.profile.provider}/${s.deployment.active.profile.model}`
-                    : "Search unavailable",
+                model,
+                "Active index still searchable",
                 `Switch failed: ${s.deployment.lastError ?? "unknown error"}`,
-            ].join("\n");
+            ]
+                .filter(Boolean)
+                .join("\n");
         }
         if (s.deployment?.staging) {
-            const active = s.deployment.active?.profile;
             const staging = s.deployment.staging.profile;
             return [
-                active ? `Search: ${active.provider}/${active.model}` : "Search unavailable",
+                model ? `Search: ${model}` : "Search unavailable",
                 `Building: ${staging.provider}/${staging.model} (${staging.dimensions}d)`,
                 `Phase: ${s.deployment.phase}${s.deployment.switchReason ? ` · ${s.deployment.switchReason}` : ""}`,
             ].join("\n");
         }
-        if (s.status === "complete" || s.status === "error") {
-            return `${s.processedFiles} files (${s.skippedFiles} unchanged)`;
+        if (s.status === "idle") {
+            return model;
         }
-        return null;
+        if (s.status === "complete" || s.status === "error") {
+            return [model, `${s.processedFiles} files (${s.skippedFiles} unchanged)`]
+                .filter(Boolean)
+                .join("\n");
+        }
+        return model;
     };
     // Build UI tree imperatively
     const root = createElement("box");
