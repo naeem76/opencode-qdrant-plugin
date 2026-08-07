@@ -181,7 +181,10 @@ Diagnostic tool to confirm the plugin is loaded and Qdrant is reachable.
 
 Shows a live status indicator:
 - Dot color reflects state (green = complete, blue = indexing, yellow = errors, gray = idle)
+- Provider tier and model (`Local` / `OpenRouter free` / `OpenRouter paid`) when known
 - Chunk and file counts
+- During a model switch: staging progress while the active index stays searchable
+- After a failed switch: `Switch failed` (the healthy active index is not shown as errored)
 - Updates every 2 seconds
 
 ### Ctrl+P commands
@@ -203,9 +206,17 @@ Alternatively, set an environment variable before starting OpenCode; it takes pr
 
 Run **Qdrant: Configure embeddings**. Free mode discovers the current embedding catalog, selects the tested preferred free model, and probes its actual output dimensions. Paid mode presents a searchable list and probes the selected model.
 
-Embedding throughput is provider-specific. Local models use bounded 16-text CPU micro-batches. Remote providers combine a wider file window into requests of up to 100 texts; paid OpenRouter starts at two concurrent requests, ramps up to eight after sustained success, and halves concurrency on `429`. Free OpenRouter is paced at its documented 20 requests/minute limit. All remote modes honor `Retry-After`, and one-text search embeddings are prioritized over queued indexing batches.
+Embedding throughput is provider-specific. Local models use bounded 16-text CPU micro-batches. Remote providers combine a wider file window into requests of up to 100 texts; paid OpenRouter starts at two concurrent requests, ramps up to eight after sustained success, and halves concurrency on `429`. Free OpenRouter is paced at its documented 20 requests/minute limit. All remote modes honor `Retry-After`, and one-text search embeddings are prioritized over queued indexing batches. Remote requests sanitize/truncate inputs, split batches on `400`, and send OpenRouter's response-cache header so identical retries can reuse prior embeddings.
 
-Changing provider, model, dimensions, or dtype creates a fresh physical collection the first time that exact profile is used. The current collection stays searchable through a stable Qdrant alias while the staging generation builds. After verification, the alias switches atomically and the previous same-model index is retained for instant switch-back. Switching back to an already-built model only flips the alias and runs an incremental catch-up; different models never share vectors. Exhausted OpenRouter 429 responses can trigger the same full-rebuild flow back to local MiniLM.
+Changing provider, model, dimensions, or dtype creates a fresh physical collection the first time that exact profile is used. The current collection stays searchable through a stable Qdrant alias while the staging generation builds. After verification, the alias switches atomically and the previous same-model index is retained for instant switch-back. Switching back to an already-built model only flips the alias and runs an incremental catch-up; re-selecting the currently active model cancels any in-flight staging switch and keeps the active index. Different models never share vectors — index and search must use the same embedding model. Exhausted OpenRouter 429 responses can trigger the same full-rebuild flow back to local MiniLM.
+
+Failed staging builds do **not** resume. Fix the cause (credits, API errors, network), then run **Configure embeddings** again for a new full staging build; the previous active index remains searchable the whole time. Search cost on cloud is only the query embedding; Qdrant similarity search itself is local.
+
+Warn/error events (including switch-failure samples and OpenRouter response bodies) append to:
+
+`<userDataDir>/errors-opencode-qdrant.log`
+
+On Windows that is typically `%LOCALAPPDATA%\opencode-qdrant\errors-opencode-qdrant.log`.
 
 ## Architecture
 
@@ -221,16 +232,13 @@ opencode.json ──> server plugin ──> Qdrant (vector DB)
 
 tui.json ──> TUI plugin
                ├── reads <userDataDir>/projects/<key>/status.json (polls 2s)
-
-Warn/error events are also appended to the global log:
-
-`<userDataDir>/errors-opencode-qdrant.log`
-
-On Windows that is typically `%LOCALAPPDATA%\opencode-qdrant\errors-opencode-qdrant.log`.
                ├── sidebar_content slot (status view)
                ├── Ctrl+P commands
                └── writes <userDataDir>/projects/<key>/trigger.json
                      ↑ server polls this to trigger reindex from TUI
+
+server also appends warn/error events to:
+  <userDataDir>/errors-opencode-qdrant.log
 ```
 
 Server and TUI plugins communicate via the filesystem — the server writes status, the TUI reads it. Reindex commands go the other direction via a trigger file.
